@@ -301,11 +301,17 @@ async function handleMcp(req, res) {
 }
 
 const SERVER_INSTRUCTIONS = [
-  "You are operating over a network tunnel, so EACH tool call is slow. Minimize the number of calls:",
-  "- To read several files, call read_many ONCE (not read_file many times).",
-  "- To make several edits (one or many files), call apply_patch ONCE — either with an `operations` array or a single unified `diff` string — instead of many replace_in_file calls.",
-  "- To understand a repo, start with repo_overview, then find_files and search_text (use context= to get surrounding lines so you rarely need a follow-up read_file).",
-  "- Keep run_command output small (target specific files; use tail_lines/head_lines).",
+  "You are operating over a network tunnel, so EACH tool call is slow. Minimize the number of calls.",
+  "Use the DEDICATED tools instead of run_command for these — they are faster and cheaper:",
+  "- Find files by name -> find_files (NOT dir/ls/Get-ChildItem/where).",
+  "- Search file contents -> search_text with context= (NOT grep/findstr/Select-String).",
+  "- Read files -> read_many for several, read_file for one (NOT type/cat/Get-Content).",
+  "- Map a repo -> repo_overview first.",
+  "- Create/edit files -> write_file / apply_patch (with a unified `diff` for many edits) (NOT echo>/Set-Content).",
+  "Reserve run_command for builds, tests, installs, running programs, and git. When you do use it:",
+  "- Pass the `cwd` argument instead of cd/pushd.",
+  "- Combine multiple steps into ONE command (&& on cmd/bash, ; on PowerShell).",
+  "- Keep output small with tail_lines/head_lines/max_output_chars.",
   "Prefer a few large, well-targeted calls over many tiny ones."
 ].join("\n");
 
