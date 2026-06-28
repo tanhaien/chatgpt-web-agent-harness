@@ -1048,7 +1048,9 @@ function parseGrepOutput(out, dir, limit) {
 // Fastest path: ripgrep. Respects .gitignore, works in any folder. null on miss.
 function ripgrepGrep(dir, query, { regex, limit, glob }) {
   if (!RG_BIN) return Promise.resolve(null);
-  const args = ["--no-heading", "--with-filename", "-n", "-I", "-S", "--color", "never"];
+  // NOTE: no -I here — in ripgrep -I means --no-filename (grep/git use it for
+  // "ignore binary"). ripgrep skips binary files by default.
+  const args = ["--no-heading", "--with-filename", "-n", "-S", "--color", "never"];
   if (!regex) args.push("-F");
   if (glob) args.push("-g", glob);
   args.push("-e", query, "--", ".");
@@ -1122,13 +1124,25 @@ async function attachContext(matches, ctx) {
 
 // Convert a simple glob (*, **, ?) to a RegExp for the scan fallback.
 function globToRegex(glob) {
-  const re = glob
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, " ")
-    .replace(/\*/g, "[^/]*")
-    .replace(/ /g, ".*")
-    .replace(/\?/g, ".");
-  return new RegExp("^" + re + "$", "i");
+  let out = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        out += ".*";
+        i++;
+      } else {
+        out += "[^/]*";
+      }
+    } else if (c === "?") {
+      out += ".";
+    } else if (/[.+^${}()|[\]\\]/.test(c)) {
+      out += "\\" + c;
+    } else {
+      out += c;
+    }
+  }
+  return new RegExp("^" + out + "$", "i");
 }
 
 // Find files by name glob: ripgrep --files > git ls-files > JS walk.
