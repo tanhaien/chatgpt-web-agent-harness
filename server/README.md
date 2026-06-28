@@ -47,6 +47,8 @@ npm start
 | `AGENT_ALLOW_DANGEROUS` | _(unset)_ | `1` allows even catastrophic system commands. Leave unset. |
 | `MCP_AUTH_TOKEN` | _(empty)_ | If set, every `/mcp` request must send `Authorization: Bearer <token>`. |
 | `DASHBOARD_PORT` | `8790` | Local-only metrics dashboard. `0` disables it. (Avoid 8788 — the OpenAI tunnel uses it.) |
+| `AGENT_READ_DEFAULT` | `50000` | Default chars `read_file` returns (raise per-call via `max_chars`). Keeps payloads small. |
+| `AGENT_CMD_OUTPUT_DEFAULT` | `50000` | Default chars of command output returned (use `tail_lines`/`head_lines`/`max_output_chars`). |
 
 ## Test
 

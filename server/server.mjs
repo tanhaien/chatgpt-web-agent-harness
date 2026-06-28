@@ -27,7 +27,7 @@ import { z } from "zod";
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
 // ----------------------------------------------------------------------------
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const PORT = Number(process.env.PORT || 8787);
 // Bind to loopback by default. The local OpenAI tunnel-client forwards to this,
 // so we never need to listen on 0.0.0.0 (which would expose a shell to the LAN).
@@ -69,6 +69,10 @@ const AUDIT_PATH = path.resolve(DATA_DIR, "audit.log");
 const METRICS_PATH = path.resolve(DATA_DIR, "metrics.json");
 
 const MAX_READ_CHARS = Number(process.env.AGENT_MAX_READ_CHARS || 200_000);
+// Default (not max) chars returned by read_file — keeps payloads small so the
+// ChatGPT UI does not choke on huge file dumps. Callers can raise via max_chars.
+const READ_DEFAULT = Number(process.env.AGENT_READ_DEFAULT || 50_000);
+const CMD_OUTPUT_DEFAULT = Number(process.env.AGENT_CMD_OUTPUT_DEFAULT || 50_000);
 const MAX_COMMAND_OUTPUT = Number(process.env.AGENT_MAX_COMMAND_OUTPUT || 200_000);
 const MAX_BODY_BYTES = Number(process.env.AGENT_MAX_BODY_BYTES || 16 * 1024 * 1024);
 const DEFAULT_CMD_TIMEOUT = 60_000;
@@ -296,8 +300,17 @@ async function handleMcp(req, res) {
   await transport.handleRequest(req, res);
 }
 
+const SERVER_INSTRUCTIONS = [
+  "You are operating over a network tunnel, so EACH tool call is slow. Minimize the number of calls:",
+  "- To read several files, call read_many ONCE (not read_file many times).",
+  "- To make several edits (one or many files), call apply_patch ONCE — either with an `operations` array or a single unified `diff` string — instead of many replace_in_file calls.",
+  "- To understand a repo, start with repo_overview, then find_files and search_text (use context= to get surrounding lines so you rarely need a follow-up read_file).",
+  "- Keep run_command output small (target specific files; use tail_lines/head_lines).",
+  "Prefer a few large, well-targeted calls over many tiny ones."
+].join("\n");
+
 function createMcpServer() {
-  const mcp = new McpServer({ name: "Local Coding Agent", version: VERSION });
+  const mcp = new McpServer({ name: "Local Coding Agent", version: VERSION }, { instructions: SERVER_INSTRUCTIONS });
   registerBasicTools(mcp);
   registerFsReadTools(mcp);
   registerFsWriteTools(mcp);
@@ -439,10 +452,10 @@ function registerFsReadTools(mcp) {
         path: z.string().min(1),
         start_line: z.number().int().min(1).optional().describe("1-based first line to return."),
         line_count: z.number().int().min(1).max(20000).optional().describe("Number of lines to return from start_line."),
-        max_chars: z.number().int().min(1).max(MAX_READ_CHARS).optional()
+        max_chars: z.number().int().min(1).max(MAX_READ_CHARS).optional().describe(`Max chars to return (default ${READ_DEFAULT}).`)
       }
     },
-    async ({ path: rel, start_line, line_count, max_chars = MAX_READ_CHARS }) => {
+    async ({ path: rel, start_line, line_count, max_chars = READ_DEFAULT }) => {
       const filePath = resolvePath(rel);
       const content = await readFile(filePath, "utf8");
       const allLines = content.split(/\r?\n/);
@@ -508,21 +521,33 @@ function registerFsReadTools(mcp) {
     },
     async ({ query, path: rel = ".", regex = false, glob, context = 0, limit = 100 }) => {
       const start = resolvePath(rel);
+      // Tolerate a broken regex: fall back to a literal substring search instead
+      // of erroring out.
+      let useRegex = regex;
+      let regexFallback = false;
+      if (regex) {
+        try {
+          new RegExp(query);
+        } catch {
+          useRegex = false;
+          regexFallback = true;
+        }
+      }
       let engine = "scan";
       let matches = null;
       const info = await stat(start).catch(() => null);
       const isDir = info && info.isDirectory();
       if (isDir && RG_BIN) {
-        matches = await ripgrepGrep(start, query, { regex, limit, glob });
+        matches = await ripgrepGrep(start, query, { regex: useRegex, limit, glob });
         if (matches) engine = "ripgrep";
       }
       if (matches === null && isDir) {
-        matches = await gitGrep(start, query, { regex, limit, glob });
+        matches = await gitGrep(start, query, { regex: useRegex, limit, glob });
         if (matches) engine = "git";
       }
-      if (matches === null) matches = await searchTree(start, query, { regex, limit, glob });
+      if (matches === null) matches = await searchTree(start, query, { regex: useRegex, limit, glob });
       if (context > 0 && matches.length) await attachContext(matches, context);
-      return jsonResult({ query, regex, engine, context, count: matches.length, matches });
+      return jsonResult({ query, regex: useRegex, regex_fallback: regexFallback, engine, context, count: matches.length, matches });
     }
   );
 
@@ -709,8 +734,9 @@ function registerFsWriteTools(mcp) {
     "apply_patch",
     {
       title: "Apply patch",
-      description: "Apply multiple file operations in one call: create, update (text edits), delete, rename.",
+      description: "Apply MANY edits in ONE call. Two modes: (a) `diff` = a standard unified diff covering one or more files (preferred for multi-file edits), or (b) `operations` = structured create/update/delete/rename. Use this instead of many replace_in_file calls.",
       inputSchema: {
+        diff: z.string().optional().describe("A unified diff (---/+++/@@). Applies by matching context, ignoring line numbers."),
         operations: z
           .array(
             z.object({
@@ -725,10 +751,18 @@ function registerFsWriteTools(mcp) {
                 .describe("For update: ordered text replacements.")
             })
           )
-          .min(1)
+          .optional()
       }
     },
-    async ({ operations }) => {
+    async ({ diff, operations }) => {
+      if (diff && diff.trim()) {
+        const results = await applyUnifiedDiff(diff);
+        const ok = results.every((r) => r.ok);
+        return jsonResult({ ok, mode: "diff", applied: results.filter((r) => r.ok).length, results });
+      }
+      if (!operations || !operations.length) {
+        throw new Error("Provide either `diff` or a non-empty `operations` array.");
+      }
       const results = [];
       for (const op of operations) {
         try {
@@ -739,7 +773,7 @@ function registerFsWriteTools(mcp) {
         }
       }
       const ok = results.every((r) => r.ok);
-      return jsonResult({ ok, applied: results.filter((r) => r.ok).length, results });
+      return jsonResult({ ok, mode: "operations", applied: results.filter((r) => r.ok).length, results });
     }
   );
 
@@ -794,6 +828,94 @@ function registerFsWriteTools(mcp) {
   );
 }
 
+// Apply a unified diff by CONTENT matching (ignores the @@ line numbers, which
+// models often get wrong). Each hunk's context+removed lines must appear in the
+// file; they are replaced by its context+added lines.
+async function applyUnifiedDiff(diffText) {
+  const results = [];
+  const lines = diffText.split(/\r?\n/);
+  const fileChunks = [];
+  let current = null;
+
+  const stripPrefix = (p) => p.replace(/^["']|["']$/g, "").replace(/^[ab]\//, "").trim();
+
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (ln.startsWith("--- ")) {
+      const next = lines[i + 1] || "";
+      const minus = stripPrefix(ln.slice(4));
+      const plus = next.startsWith("+++ ") ? stripPrefix(next.slice(4)) : "";
+      current = { minus, plus, hunks: [], hunk: null };
+      fileChunks.push(current);
+      if (next.startsWith("+++ ")) i++;
+      continue;
+    }
+    if (!current) continue;
+    if (ln.startsWith("@@")) {
+      current.hunk = { before: [], after: [] };
+      current.hunks.push(current.hunk);
+      continue;
+    }
+    if (!current.hunk) continue;
+    const tag = ln[0];
+    const body = ln.slice(1);
+    if (tag === " ") {
+      current.hunk.before.push(body);
+      current.hunk.after.push(body);
+    } else if (tag === "-") {
+      current.hunk.before.push(body);
+    } else if (tag === "+") {
+      current.hunk.after.push(body);
+    } else if (ln === "\\ No newline at end of file") {
+      // ignore
+    }
+  }
+
+  for (const fc of fileChunks) {
+    const isNew = fc.minus === "/dev/null";
+    const isDelete = fc.plus === "/dev/null";
+    const relPath = isNew ? fc.plus : fc.minus || fc.plus;
+    try {
+      const target = resolvePath(relPath);
+      if (isDelete) {
+        await rm(target, { force: true });
+        results.push({ path: toRel(target), ok: true, action: "delete" });
+        continue;
+      }
+      if (isNew) {
+        const content = fc.hunks.flatMap((h) => h.after).join("\n");
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, content.endsWith("\n") ? content : content + "\n", "utf8");
+        results.push({ path: toRel(target), ok: true, action: "create" });
+        continue;
+      }
+      let content = await readFile(target, "utf8");
+      let applied = 0;
+      for (const h of fc.hunks) {
+        const before = h.before.join("\n");
+        const after = h.after.join("\n");
+        if (before === after) continue;
+        if (before && content.includes(before)) {
+          content = content.replace(before, after);
+          applied++;
+        } else if (!before) {
+          content += (content.endsWith("\n") ? "" : "\n") + after;
+          applied++;
+        } else {
+          throw new Error(`hunk context not found in ${toRel(target)}`);
+        }
+      }
+      await writeFile(target, content, "utf8");
+      results.push({ path: toRel(target), ok: true, action: "update", hunks: applied });
+    } catch (err) {
+      results.push({ path: relPath, ok: false, error: String(err?.message || err) });
+      break;
+    }
+  }
+  if (!fileChunks.length) throw new Error("No file sections found in diff (need ---/+++ headers).");
+  return results;
+}
+
 async function applyOne(op) {
   const target = resolvePath(op.path);
   if (op.op === "create") {
@@ -841,19 +963,35 @@ function registerExecTools(mcp) {
     "run_command",
     {
       title: "Run command",
-      description: "Run a command and wait for it to finish. Use proc_start for long-running servers.",
+      description: "Run a command and wait for it to finish. Use proc_start for long-running servers. Output is trimmed to keep payloads small — use tail_lines/head_lines or max_output_chars to control it.",
       inputSchema: {
         command: z.string().min(1),
         cwd: z.string().optional().describe("Working directory inside a root."),
         shell: z.enum(["cmd", "powershell", "bash"]).optional().describe("Shell to use (default cmd on Windows)."),
-        timeout_ms: z.number().int().min(1000).max(600000).optional()
+        timeout_ms: z.number().int().min(1000).max(600000).optional(),
+        tail_lines: z.number().int().min(1).max(5000).optional().describe("Return only the last N lines of output."),
+        head_lines: z.number().int().min(1).max(5000).optional().describe("Return only the first N lines of output."),
+        max_output_chars: z.number().int().min(500).max(MAX_COMMAND_OUTPUT).optional().describe(`Cap stdout/stderr chars (default ${CMD_OUTPUT_DEFAULT}).`)
       }
     },
-    async ({ command, cwd = ".", shell, timeout_ms = DEFAULT_CMD_TIMEOUT }) => {
+    async ({ command, cwd = ".", shell, timeout_ms = DEFAULT_CMD_TIMEOUT, tail_lines, head_lines, max_output_chars = CMD_OUTPUT_DEFAULT }) => {
       assertCommandAllowed(command);
       const workdir = resolvePath(cwd);
       const result = await runShellCommand(command, workdir, shell, timeout_ms);
-      return jsonResult({ cwd: workdir, command, shell: shell || defaultShell(), ...result });
+      const trim = (s) => trimOutput(s, { tail_lines, head_lines, max_chars: max_output_chars });
+      const stdout = trim(result.stdout);
+      const stderr = trim(result.stderr);
+      return jsonResult({
+        cwd: workdir,
+        command,
+        shell: shell || defaultShell(),
+        exit_code: result.exit_code,
+        timed_out: result.timed_out,
+        stdout_truncated: stdout.length < result.stdout.length,
+        stderr_truncated: stderr.length < result.stderr.length,
+        stdout,
+        stderr
+      });
     }
   );
 }
@@ -1551,6 +1689,19 @@ function appendLimited(current, next, max) {
   const combined = current + next;
   if (combined.length <= max) return combined;
   return combined.slice(combined.length - max);
+}
+
+// Trim command output for display: prefer line slicing (head/tail), else cap chars.
+function trimOutput(s, { tail_lines, head_lines, max_chars }) {
+  if (!s) return s;
+  if (head_lines || tail_lines) {
+    const lines = s.split(/\r?\n/);
+    if (lines.length && lines[lines.length - 1] === "") lines.pop(); // drop trailing newline's empty line
+    const picked = head_lines ? lines.slice(0, head_lines) : lines.slice(-tail_lines);
+    const out = picked.join("\n");
+    return out.length > max_chars ? out.slice(0, max_chars) : out;
+  }
+  return s.length > max_chars ? s.slice(0, max_chars) : s;
 }
 
 function summarizeArgs(args) {
