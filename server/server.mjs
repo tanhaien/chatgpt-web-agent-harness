@@ -71,8 +71,8 @@ const METRICS_PATH = path.resolve(DATA_DIR, "metrics.json");
 const MAX_READ_CHARS = Number(process.env.AGENT_MAX_READ_CHARS || 200_000);
 // Default (not max) chars returned by read_file — keeps payloads small so the
 // ChatGPT UI does not choke on huge file dumps. Callers can raise via max_chars.
-const READ_DEFAULT = Number(process.env.AGENT_READ_DEFAULT || 50_000);
-const CMD_OUTPUT_DEFAULT = Number(process.env.AGENT_CMD_OUTPUT_DEFAULT || 50_000);
+const READ_DEFAULT = Number(process.env.AGENT_READ_DEFAULT || 30_000);
+const CMD_OUTPUT_DEFAULT = Number(process.env.AGENT_CMD_OUTPUT_DEFAULT || 20_000);
 const MAX_COMMAND_OUTPUT = Number(process.env.AGENT_MAX_COMMAND_OUTPUT || 200_000);
 const MAX_BODY_BYTES = Number(process.env.AGENT_MAX_BODY_BYTES || 16 * 1024 * 1024);
 const DEFAULT_CMD_TIMEOUT = 60_000;
@@ -312,6 +312,7 @@ const SERVER_INSTRUCTIONS = [
   "- Pass the `cwd` argument instead of cd/pushd.",
   "- Combine multiple steps into ONE command (&& on cmd/bash, ; on PowerShell).",
   "- Keep output small with tail_lines/head_lines/max_output_chars.",
+  "Keep the conversation light: do NOT re-read a file you already read; read only the line range you need; never dump a whole large file or large command output unless asked.",
   "Prefer a few large, well-targeted calls over many tiny ones."
 ].join("\n");
 
