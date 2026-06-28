@@ -1,3 +1,7 @@
+// Local Coding Agent
+// Copyright (c) 2026 Long Nguyen
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 

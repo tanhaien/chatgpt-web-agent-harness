@@ -118,7 +118,12 @@ expose it on a public tunnel without `MCP_AUTH_TOKEN`.
 
 ### License
 
-[MIT](LICENSE) © 2026 Long Nguyễn.
+**[AGPL-3.0-or-later](LICENSE)** © 2026 Long Nguyễn ([@LongNgn204](https://github.com/LongNgn204)).
+
+Free and open source. You may use, study, modify, and share it — but if you
+distribute it or run a modified version as a network service, you must release
+your source under the same AGPL-3.0 license and keep the copyright notice. This
+keeps the project free for everyone and prevents closed, proprietary forks.
 
 > This project is not affiliated with or endorsed by OpenAI. "ChatGPT" and
 > related marks belong to their owners. You must obtain the tunnel client and
@@ -239,7 +244,13 @@ giờ expose qua tunnel public mà không đặt `MCP_AUTH_TOKEN`.
 
 ### Giấy phép
 
-[MIT](LICENSE) © 2026 Long Nguyễn.
+**[AGPL-3.0-or-later](LICENSE)** © 2026 Long Nguyễn ([@LongNgn204](https://github.com/LongNgn204)).
+
+Miễn phí và mã nguồn mở. Bạn được dùng, học hỏi, sửa đổi và chia sẻ — nhưng nếu
+phân phối lại hoặc chạy bản đã sửa dưới dạng dịch vụ mạng, bạn **phải công khai
+mã nguồn theo cùng giấy phép AGPL-3.0** và giữ nguyên dòng bản quyền. Điều này
+giữ cho dự án luôn miễn phí với mọi người và **ngăn việc đem đóng kín/thương mại
+hoá riêng**.
 
 > Dự án không liên kết hay được bảo trợ bởi OpenAI. "ChatGPT" và các nhãn liên
 > quan thuộc về chủ sở hữu của chúng. Bạn phải tự lấy tunnel client và dùng

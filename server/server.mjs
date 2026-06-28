@@ -1,3 +1,7 @@
+// Local Coding Agent
+// Copyright (c) 2026 Long Nguyen
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import http from "node:http";
 import { spawn } from "node:child_process";
 import {
