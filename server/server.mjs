@@ -387,6 +387,97 @@ function registerSkillTools(mcp) {
       return jsonResult({ name: skill.name, dir: skill.dir, files, content: body.slice(0, MAX_READ_CHARS) });
     }
   );
+
+  reg(
+    mcp,
+    "create_skill",
+    {
+      title: "Create skill",
+      description: "Author a reusable skill: writes <skillsdir>/<name>/SKILL.md with YAML frontmatter (name, description) plus your body. Default skillsdir is <PRIMARY_ROOT>/.claude/skills. After this, list_skills will show it.",
+      inputSchema: {
+        name: z.string().min(1).describe("Skill name (folder + frontmatter name), e.g. \"deploy-web\"."),
+        description: z.string().min(1).describe("One-line description shown by list_skills."),
+        body: z.string().describe("Markdown body of the skill (instructions). Written below the frontmatter."),
+        dir: z.string().optional().describe("Skills directory to write into (must be inside a root). Default <PRIMARY_ROOT>/.claude/skills.")
+      }
+    },
+    async ({ name, description, body, dir }) => {
+      const folderName = sanitizeSkillName(name);
+      if (!folderName) throw new Error("Invalid skill name. Use letters, digits, dot, dash or underscore.");
+      const skillsDir = resolvePath(dir || defaultSkillsDir());
+      const skillFolder = path.join(skillsDir, folderName);
+      // Keep writes within a recognised skills dir (defense in depth).
+      if (!isWithinSkillsDir(skillFolder)) {
+        throw new Error("Refusing to write outside a skills directory.");
+      }
+      const skillFile = path.join(skillFolder, "SKILL.md");
+      const frontName = String(name).replace(/"/g, '\\"');
+      const frontDesc = String(description).replace(/\r?\n/g, " ").replace(/"/g, '\\"');
+      const content = `---\nname: "${frontName}"\ndescription: "${frontDesc}"\n---\n\n${body || ""}${body && !body.endsWith("\n") ? "\n" : ""}`;
+      await mkdir(skillFolder, { recursive: true });
+      await writeFile(skillFile, content, "utf8");
+      return jsonResult({ ok: true, name: folderName, dir: skillFolder, skill_file: skillFile });
+    }
+  );
+
+  reg(
+    mcp,
+    "delete_skill",
+    {
+      title: "Delete skill",
+      description: "Delete a skill folder (the directory holding its SKILL.md). Only removes folders located inside a skills directory.",
+      inputSchema: {
+        name: z.string().min(1).describe("Skill name from list_skills."),
+        dir: z.string().optional().describe("Skills directory to look in (must be inside a root). Default <PRIMARY_ROOT>/.claude/skills.")
+      }
+    },
+    async ({ name, dir }) => {
+      const skills = await discoverSkills();
+      let target = null;
+      const hit = skills.find((s) => s.name.toLowerCase() === String(name).toLowerCase());
+      if (hit) {
+        target = hit.dir;
+      } else {
+        const folderName = sanitizeSkillName(name);
+        if (folderName) target = path.join(resolvePath(dir || defaultSkillsDir()), folderName);
+      }
+      if (!target) throw new Error(`No skill named "${name}".`);
+      const resolved = resolvePath(target);
+      if (!isWithinSkillsDir(resolved)) {
+        throw new Error("Refusing to delete a folder that is not inside a skills directory.");
+      }
+      if (!existsSync(resolved)) throw new Error(`No skill folder at ${resolved}.`);
+      await rm(resolved, { recursive: true, force: true });
+      return jsonResult({ ok: true, deleted: resolved });
+    }
+  );
+}
+
+// First workspace skills dir for authoring: <PRIMARY_ROOT>/.claude/skills.
+function defaultSkillsDir() {
+  return path.join(PRIMARY_ROOT, ".claude", "skills");
+}
+
+// Skill folder names: keep them simple path segments (no separators / traversal).
+function sanitizeSkillName(name) {
+  const s = String(name || "").trim();
+  if (!s || s === "." || s === "..") return "";
+  if (/[\\/]/.test(s) || !/^[\w.-]+$/.test(s)) return "";
+  return s;
+}
+
+// A path is "inside a skills directory" if any segment of its parent chain is a
+// known skills dir (from SKILLS_DIRS) or matches the .claude/skills | .agent/skills
+// convention under a root. Used to confine create/delete to skills areas.
+function isWithinSkillsDir(p) {
+  const parent = path.dirname(p);
+  const candidates = new Set(SKILLS_DIRS.map((d) => path.resolve(d)));
+  candidates.add(path.resolve(defaultSkillsDir()));
+  for (const root of ROOTS) {
+    candidates.add(path.resolve(path.join(root, ".claude", "skills")));
+    candidates.add(path.resolve(path.join(root, ".agent", "skills")));
+  }
+  return candidates.has(path.resolve(parent));
 }
 
 // ----------------------------------------------------------------------------
@@ -1212,6 +1303,96 @@ function registerGitTool(mcp) {
       return jsonResult({ cwd: workdir, args, ...result });
     }
   );
+
+  reg(
+    mcp,
+    "git_status",
+    {
+      title: "Git status",
+      description: "Parsed working-tree status (git status --porcelain) for a repo inside a root. Returns a structured list of changed files with their index/worktree codes.",
+      inputSchema: {
+        cwd: z.string().optional().describe("Repository directory inside a root (default the primary root).")
+      }
+    },
+    async ({ cwd = "." }) => {
+      const workdir = resolvePath(cwd);
+      const branchRes = await spawnCapture("git", ["rev-parse", "--abbrev-ref", "HEAD"], workdir, DEFAULT_CMD_TIMEOUT);
+      const result = await spawnCapture("git", ["status", "--porcelain"], workdir, DEFAULT_CMD_TIMEOUT);
+      const files = parsePorcelain(result.stdout || "");
+      return jsonResult({
+        cwd: workdir,
+        branch: (branchRes.stdout || "").trim() || null,
+        clean: files.length === 0,
+        count: files.length,
+        files,
+        exit_code: result.exit_code,
+        stderr: result.stderr || undefined
+      });
+    }
+  );
+
+  reg(
+    mcp,
+    "git_diff",
+    {
+      title: "Git diff",
+      description: "Show a git diff for a repo inside a root. Optionally limit to a path; pass staged:true to diff the index against HEAD.",
+      inputSchema: {
+        path: z.string().optional().describe("Limit the diff to this file or directory."),
+        staged: z.boolean().optional().describe("Diff staged changes (--staged) instead of the working tree."),
+        cwd: z.string().optional().describe("Repository directory inside a root (default the primary root).")
+      }
+    },
+    async ({ path: rel, staged = false, cwd = "." }) => {
+      const workdir = resolvePath(cwd);
+      const args = ["diff"];
+      if (staged) args.push("--staged");
+      if (rel) {
+        // Confine the diff path to a root as well.
+        const target = resolvePath(rel);
+        args.push("--", target);
+      }
+      const result = await spawnCapture("git", args, workdir, DEFAULT_CMD_TIMEOUT);
+      return jsonResult({
+        cwd: workdir,
+        staged,
+        path: rel || null,
+        diff: result.stdout || "",
+        empty: !(result.stdout || "").trim(),
+        exit_code: result.exit_code,
+        stderr: result.stderr || undefined
+      });
+    }
+  );
+}
+
+// Parse `git status --porcelain` into structured entries. Each line is
+// "XY <path>" (or "XY <old> -> <new>" for renames) where X is the index code
+// and Y the worktree code.
+function parsePorcelain(out) {
+  const files = [];
+  for (const line of out.split(/\r?\n/)) {
+    if (!line) continue;
+    const index = line[0];
+    const worktree = line[1];
+    let rest = line.slice(3);
+    let from = null;
+    let to = rest;
+    const arrow = rest.indexOf(" -> ");
+    if (arrow !== -1) {
+      from = rest.slice(0, arrow);
+      to = rest.slice(arrow + 4);
+    }
+    files.push({
+      index: index === " " ? null : index,
+      worktree: worktree === " " ? null : worktree,
+      path: to,
+      from,
+      staged: index !== " " && index !== "?",
+      untracked: index === "?" && worktree === "?"
+    });
+  }
+  return files;
 }
 
 // ----------------------------------------------------------------------------
