@@ -168,6 +168,14 @@ dotnet run
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
+The tray app exposes the tunnel fields separately:
+
+- **Tunnel ID**: the `tunnel_...` value shown in ChatGPT/OpenAI.
+- **Organization ID**: used to send the `OpenAI-Organization` control-plane
+  header when tunnel-client reports `tunnel_active_organization_required`.
+- **Runtime API key**: saved encrypted with Windows DPAPI; this is not the
+  Admin API key used to create/manage tunnels.
+
 ### Connect it to ChatGPT Web
 
 > Requires a ChatGPT plan that supports custom MCP connectors. Menu names may
@@ -483,6 +491,14 @@ dotnet run
 # hoặc build 1 file exe self-contained:
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
+
+App tray có các ô tunnel riêng biệt:
+
+- **Tunnel ID**: giá trị `tunnel_...` hiển thị trong ChatGPT/OpenAI.
+- **Organization ID**: dùng để gửi header control-plane `OpenAI-Organization`
+  khi tunnel-client báo `tunnel_active_organization_required`.
+- **Runtime API key**: được lưu mã hoá bằng Windows DPAPI; đây không phải Admin
+  API key dùng để tạo/quản lý tunnel.
 
 ### Kết nối với ChatGPT Web
 

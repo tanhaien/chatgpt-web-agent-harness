@@ -72,6 +72,10 @@ public sealed class ProcessSupervisor : IDisposable
             throw new FileNotFoundException($"tunnel-client.exe not found: {cfg.TunnelExe}");
         if (string.IsNullOrEmpty(key))
             throw new InvalidOperationException("Tunnel key is empty. Enter and save the key first.");
+        if (string.IsNullOrWhiteSpace(cfg.TunnelId))
+            throw new InvalidOperationException("Tunnel ID is empty. Paste the tunnel_... ID first.");
+
+        cfg.WriteTunnelProfile();
 
         var psi = new ProcessStartInfo
         {
@@ -87,8 +91,11 @@ public sealed class ProcessSupervisor : IDisposable
         psi.ArgumentList.Add(cfg.TunnelProfileName);
         psi.ArgumentList.Add("--profile-dir");
         psi.ArgumentList.Add(cfg.TunnelProfileDir);
+        psi.ArgumentList.Add("--control-plane.tunnel-id");
+        psi.ArgumentList.Add(cfg.TunnelId);
         if (cfg.OpenWebUi) psi.ArgumentList.Add("--open-web-ui");
         psi.Environment["CONTROL_PLANE_API_KEY"] = key;
+        psi.Environment["CONTROL_PLANE_TUNNEL_ID"] = cfg.TunnelId;
         if (!string.IsNullOrWhiteSpace(cfg.AuthToken))
         {
             // The MCP server enforces Bearer auth when MCP_AUTH_TOKEN is set.

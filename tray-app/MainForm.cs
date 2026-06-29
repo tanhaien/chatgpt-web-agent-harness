@@ -25,6 +25,8 @@ public sealed class MainForm : Form
     private TextBox _txtTunnelExe = null!;
     private TextBox _txtProfileDir = null!;
     private TextBox _txtProfileName = null!;
+    private TextBox _txtTunnelId = null!;
+    private TextBox _txtOrgId = null!;
     private TextBox _txtWorkspace = null!;
     private TextBox _txtExtraRoots = null!;
     private ComboBox _cmbMode = null!;
@@ -43,7 +45,7 @@ public sealed class MainForm : Form
     {
         Text = "Local Coding Agent";
         Width = 660;
-        Height = 780;
+        Height = 835;
         StartPosition = FormStartPosition.CenterScreen;
         MinimizeBox = true;
         FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -103,18 +105,27 @@ public sealed class MainForm : Form
 
         _txtAuth = AddRow("Auth token (opt)", ref y);
 
-        AddSection("Tunnel key", ref y);
-        AddLabel("CONTROL_PLANE_API_KEY", y, width: 180);
-        _txtKey = new TextBox { Left = 200, Top = y - 3, Width = 290, UseSystemPasswordChar = true };
+        AddSection("Tunnel", ref y);
+        _txtTunnelId = AddRow("Tunnel ID", ref y);
+        AddLabel("Organization ID", y);
+        _txtOrgId = new TextBox { Left = 150, Top = y - 3, Width = 340 };
+        Controls.Add(_txtOrgId);
+        var btnSaveTunnel = new Button { Text = "Save tunnel", Left = 495, Top = y - 4, Width = 120 };
+        btnSaveTunnel.Click += (_, _) => SaveTunnelSettings();
+        Controls.Add(btnSaveTunnel);
+        y += 30;
+
+        AddLabel("Runtime API key", y);
+        _txtKey = new TextBox { Left = 150, Top = y - 3, Width = 340, UseSystemPasswordChar = true };
         Controls.Add(_txtKey);
         var btnSaveKey = new Button { Text = "Save key", Left = 495, Top = y - 4, Width = 90 };
         btnSaveKey.Click += (_, _) => SaveKey();
         Controls.Add(btnSaveKey);
         y += 30;
-        _lblKeyState = new Label { Left = 200, Top = y, Width = 380, ForeColor = System.Drawing.Color.DimGray };
+        _lblKeyState = new Label { Left = 150, Top = y, Width = 480, ForeColor = System.Drawing.Color.DimGray };
         Controls.Add(_lblKeyState);
         y += 26;
-        _chkOpenWeb = new CheckBox { Text = "Open tunnel web UI on start", Left = 200, Top = y, Width = 300 };
+        _chkOpenWeb = new CheckBox { Text = "Open tunnel web UI on start", Left = 150, Top = y, Width = 300 };
         Controls.Add(_chkOpenWeb);
         y += 34;
 
@@ -217,6 +228,8 @@ public sealed class MainForm : Form
         _txtTunnelExe.Text = _cfg.TunnelExe;
         _txtProfileDir.Text = _cfg.TunnelProfileDir;
         _txtProfileName.Text = _cfg.TunnelProfileName;
+        _txtTunnelId.Text = _cfg.TunnelId;
+        _txtOrgId.Text = _cfg.OrganizationId;
         _txtWorkspace.Text = _cfg.Workspace;
         _txtExtraRoots.Text = _cfg.ExtraRoots;
         _cmbMode.SelectedItem = _cfg.Mode == "safe" ? "safe" : "full";
@@ -234,6 +247,8 @@ public sealed class MainForm : Form
         _cfg.TunnelExe = _txtTunnelExe.Text.Trim();
         _cfg.TunnelProfileDir = _txtProfileDir.Text.Trim();
         _cfg.TunnelProfileName = _txtProfileName.Text.Trim();
+        _cfg.TunnelId = _txtTunnelId.Text.Trim();
+        _cfg.OrganizationId = _txtOrgId.Text.Trim();
         _cfg.Workspace = _txtWorkspace.Text.Trim();
         _cfg.ExtraRoots = _txtExtraRoots.Text.Trim();
         _cfg.Mode = (_cmbMode.SelectedItem as string) ?? "full";
@@ -307,6 +322,23 @@ public sealed class MainForm : Form
         _txtKey.Clear();
         _lblKeyState.Text = "Key is saved (encrypted).";
         AppendLog("[ui] tunnel key saved (DPAPI, current user).");
+    }
+
+    private void SaveTunnelSettings()
+    {
+        try
+        {
+            SyncToConfig();
+            _cfg.FillDefaults();
+            _cfg.Save();
+            _cfg.WriteTunnelProfile();
+            AppendLog("[ui] tunnel settings saved: " + _cfg.TunnelProfilePath);
+        }
+        catch (Exception ex)
+        {
+            AppendLog("[error] save tunnel: " + ex.Message);
+            MessageBox.Show(this, ex.Message, "Local Coding Agent", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void CopyUrl()

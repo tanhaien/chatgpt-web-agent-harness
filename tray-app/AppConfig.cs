@@ -17,6 +17,8 @@ public class AppConfig
     public string TunnelExe { get; set; } = "";
     public string TunnelProfileName { get; set; } = "local-coding-agent";
     public string TunnelProfileDir { get; set; } = "";
+    public string TunnelId { get; set; } = "";
+    public string OrganizationId { get; set; } = "";
     public string Workspace { get; set; } = "";
     public string ExtraRoots { get; set; } = "";
     public string Mode { get; set; } = "safe";
@@ -47,6 +49,18 @@ public class AppConfig
 
     [JsonIgnore]
     public string DashboardUrl => $"http://127.0.0.1:{DashboardPort}/ui";
+
+    [JsonIgnore]
+    public string TunnelProfilePath
+    {
+        get
+        {
+            var fileName = TunnelProfileName.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase)
+                ? TunnelProfileName
+                : TunnelProfileName + ".yaml";
+            return Path.Combine(TunnelProfileDir, fileName);
+        }
+    }
 
     public static AppConfig Load()
     {
@@ -81,6 +95,8 @@ public class AppConfig
         if (string.IsNullOrWhiteSpace(ServerScript)) ServerScript = "server.mjs";
         if (string.IsNullOrWhiteSpace(NodePath)) NodePath = "node";
         if (string.IsNullOrWhiteSpace(TunnelProfileName)) TunnelProfileName = "local-coding-agent";
+        if (string.IsNullOrWhiteSpace(TunnelId)) TunnelId = ReadProfileScalar("tunnel_id");
+        if (string.IsNullOrWhiteSpace(OrganizationId)) OrganizationId = ReadProfileOrganizationId();
     }
 
     public void Save()
@@ -88,6 +104,38 @@ public class AppConfig
         Directory.CreateDirectory(ConfigDir);
         var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(ConfigPath, json);
+    }
+
+    public void WriteTunnelProfile()
+    {
+        if (string.IsNullOrWhiteSpace(TunnelId))
+            throw new InvalidOperationException("Tunnel ID is empty. Paste the tunnel_... ID from ChatGPT/OpenAI first.");
+
+        Directory.CreateDirectory(TunnelProfileDir);
+        var includeOrgHeader = !string.IsNullOrWhiteSpace(OrganizationId);
+        var sb = new StringBuilder();
+        sb.AppendLine("config_version: 1");
+        sb.AppendLine("control_plane:");
+        sb.AppendLine("  base_url: \"https://api.openai.com\"");
+        sb.AppendLine($"  tunnel_id: \"{YamlEscape(TunnelId.Trim())}\"");
+        sb.AppendLine("  api_key: \"env:CONTROL_PLANE_API_KEY\"");
+        if (includeOrgHeader)
+        {
+            sb.AppendLine("  extra_headers:");
+            sb.AppendLine($"    - \"OpenAI-Organization: {YamlEscape(OrganizationId.Trim())}\"");
+        }
+        sb.AppendLine("health:");
+        sb.AppendLine("  listen_addr: \"127.0.0.1:8788\"");
+        sb.AppendLine("admin_ui:");
+        sb.AppendLine($"  open_browser: {OpenWebUi.ToString().ToLowerInvariant()}");
+        sb.AppendLine("log:");
+        sb.AppendLine("  level: info");
+        sb.AppendLine("  format: json");
+        sb.AppendLine("mcp:");
+        sb.AppendLine("  server_urls:");
+        sb.AppendLine("    - channel: main");
+        sb.AppendLine($"      url: \"{YamlEscape(McpUrl)}\"");
+        File.WriteAllText(TunnelProfilePath, sb.ToString(), new UTF8Encoding(false));
     }
 
     public void SetKey(string? plain)
@@ -113,5 +161,61 @@ public class AppConfig
         {
             return null;
         }
+    }
+
+    private string ReadProfileScalar(string key)
+    {
+        try
+        {
+            if (!File.Exists(TunnelProfilePath)) return "";
+            foreach (var raw in File.ReadLines(TunnelProfilePath))
+            {
+                var line = raw.Trim();
+                if (!line.StartsWith(key + ":", StringComparison.Ordinal)) continue;
+                return UnquoteYamlScalar(line[(key.Length + 1)..].Trim());
+            }
+        }
+        catch
+        {
+            return "";
+        }
+        return "";
+    }
+
+    private string ReadProfileOrganizationId()
+    {
+        try
+        {
+            if (!File.Exists(TunnelProfilePath)) return "";
+            foreach (var raw in File.ReadLines(TunnelProfilePath))
+            {
+                var line = raw.Trim();
+                if (line.StartsWith("-", StringComparison.Ordinal)) line = line[1..].Trim();
+                line = UnquoteYamlScalar(line);
+                if (line.Contains("OpenAI-Organization:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var marker = "OpenAI-Organization:";
+                    var value = line[(line.IndexOf(marker, StringComparison.OrdinalIgnoreCase) + marker.Length)..].Trim();
+                    if (value.StartsWith("env:", StringComparison.OrdinalIgnoreCase)) return "";
+                    return value;
+                }
+            }
+        }
+        catch
+        {
+            return "";
+        }
+        return "";
+    }
+
+    private static string YamlEscape(string value) =>
+        value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+    private static string UnquoteYamlScalar(string value)
+    {
+        value = value.Trim();
+        if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+            value = value[1..^1].Replace("\\\"", "\"").Replace("\\\\", "\\");
+        return value;
     }
 }
