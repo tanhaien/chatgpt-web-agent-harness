@@ -31,7 +31,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 1. Launch the app. Path fields auto-fill relative to the repo; set **Workspace**
    to the folder you want the agent to work in.
-2. Choose **Mode** (`safe` recommended; `full` = unrestricted inside roots).
+2. Choose **Mode** (`safe` recommended) and **Policy** (`balanced` recommended;
+   `strict` = read-only, `full` = no local approval gate).
 3. Point **tunnel-client.exe** at your copy (not shipped — see repo README).
 4. Paste **CONTROL_PLANE_API_KEY** → **Save key** (stored encrypted via DPAPI).
 5. **Start** → server then tunnel. **Copy MCP URL** and add it as a connector in ChatGPT.

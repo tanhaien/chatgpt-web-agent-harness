@@ -60,7 +60,8 @@ async function startServer(workspace) {
           PORT: String(EVAL_PORT),
           DASHBOARD_PORT: "0",
           AGENT_WORKSPACE: workspace,
-          AGENT_MODE: "safe"
+          AGENT_MODE: "safe",
+          AGENT_POLICY: "full"
         },
         windowsHide: true
       }

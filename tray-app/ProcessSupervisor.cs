@@ -51,6 +51,7 @@ public sealed class ProcessSupervisor : IDisposable
         psi.Environment["AGENT_HOST"] = "127.0.0.1";
         psi.Environment["AGENT_WORKSPACE"] = cfg.Workspace;
         psi.Environment["AGENT_MODE"] = cfg.Mode;
+        psi.Environment["AGENT_POLICY"] = cfg.Policy;
         psi.Environment["AGENT_EXTRA_ROOTS"] = cfg.ExtraRoots;
         psi.Environment["MCP_AUTH_TOKEN"] = cfg.AuthToken;
 

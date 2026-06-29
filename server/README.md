@@ -18,6 +18,7 @@ ChatGPT sessions; it is a normal MCP connector you authorize.
 | Execute | `run_command` (cmd/powershell/bash/sh/zsh) |
 | Processes | `proc_start`, `proc_list`, `proc_output`, `proc_stop` |
 | Git | `git` |
+| Pro | `workspace_snapshot`, `workspace_doctor`, `quality_gate`, `session_report` |
 | Notes & session | `save_note`, `list_notes`, `checkpoint`, `resume` |
 
 ## Run
@@ -44,9 +45,12 @@ npm start
 | `AGENT_WORKSPACE` | `../agent-workspace` | Primary root the agent may touch. |
 | `AGENT_EXTRA_ROOTS` | _(empty)_ | Extra roots, `;`-separated. |
 | `AGENT_EXTRA_ROOTS_JSON` | _(empty)_ | Extra roots as a JSON string array. Prefer this for paths that contain separators. |
-| `AGENT_MODE` | `safe` | `safe` = conservative blocklist; `full` = unrestricted **inside roots**. |
+| `AGENT_MODE` | `safe` | Command guardrail. `safe` = conservative blocklist; `full` = fewer app-level command blocks. Not an OS sandbox. |
+| `AGENT_POLICY` | `balanced` | Tool policy. `strict` = read-only; `balanced` = local approval for risky actions; `full` = no policy approval gate. |
 | `AGENT_ALLOW_DANGEROUS` | _(unset)_ | `1` allows even catastrophic system commands. Leave unset. |
 | `MCP_AUTH_TOKEN` | _(empty)_ | If set, every `/mcp` request must send `Authorization: Bearer <token>`. |
+| `MCP_ALLOWED_ORIGINS` | _(empty)_ | Trusted browser origins for `/mcp`. Empty rejects browser-origin MCP calls. |
+| `AGENT_APPROVAL_TOKEN` | _(empty)_ | Optional secret for MCP-based approval tools. Prefer dashboard approvals. |
 | `DASHBOARD_PORT` | `8790` | Local-only metrics dashboard. `0` disables it. (Avoid 8788 — the OpenAI tunnel uses it.) |
 | `AGENT_READ_DEFAULT` | `30000` | Default chars `read_file` returns (raise per-call via `max_chars`). Keeps payloads + context small. |
 | `AGENT_CMD_OUTPUT_DEFAULT` | `20000` | Default chars of command output returned (use `tail_lines`/`head_lines`/`max_output_chars`). |
@@ -54,5 +58,8 @@ npm start
 ## Test
 
 ```bash
-npm run test:agent   # exercises every tool against a running server
+npm run test:agent       # exercises every tool against a running server
+npm run test:security    # runtime security checks against a running server
+npm run test:hardening   # self-contained policy/origin/body/undo regressions
+npm run test:pro         # Pro snapshot/health/tier regression checks
 ```

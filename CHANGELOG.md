@@ -3,6 +3,110 @@
 All notable changes to Local Coding Agent are documented here. The project
 follows [Semantic Versioning](https://semver.org/).
 
+## [4.2.0-pro] - 2026-06-30
+
+Major Pro workflow upgrade focused on day-to-day work quality, not marketing.
+This release adds operational diagnostics, structured verification, and
+end-of-session reporting so agents can move faster while leaving stronger
+evidence behind.
+
+### Added
+
+- `workspace_doctor`: readiness diagnosis for roots, mode/policy, MCP auth,
+  browser-origin posture, ripgrep availability, git state, project profile,
+  detected quality commands, README/security docs, score, and recommendations.
+- `quality_gate`: structured lint/typecheck/test/build runner with dry-run
+  planning, ordered gates, compact pass/fail summaries, stop-on-failure, and
+  detected/profile command support.
+- `session_report`: end-of-session report with health score, bottlenecks,
+  metrics, top tools, git state, doctor summary, recommendations, and recent
+  errors.
+- Pro regression coverage for `workspace_doctor`, `quality_gate`, and
+  `session_report`.
+
+### Changed
+
+- Server, npm package, and tray version are now `4.2.0-pro`.
+- MCP instructions now recommend `workspace_doctor` for readiness checks,
+  `quality_gate` after edits, and `session_report` before final handoff.
+- Dashboard/home tool listing now includes the new Pro workflow tools.
+
+## [4.1.1-pro] - 2026-06-30
+
+Quality-focused Pro update on top of v4.1 hardening. This release focuses on
+fewer MCP round-trips, clearer operational health, and a stronger demo story.
+
+### Added
+
+- `workspace_snapshot` Pro tool: one call returns workspace roots, mode/policy,
+  safety model, project profile, important files, compact tree, git status,
+  detected test/build/lint commands, optional symbol sample, metrics summary,
+  health score, bottlenecks, and next-best actions.
+- Dashboard Health Score card and Pro speed/safety recommendations.
+- `tier: "pro"` metadata in `workspace_info` and `/metrics`.
+- `test:pro` regression suite for the Pro snapshot, tier metadata, safety model,
+  detected commands, important files, symbol sample, health score, and next
+  actions.
+
+### Changed
+
+- Server, npm package, and tray version are now `4.1.1-pro`.
+- MCP server instructions now tell clients to start with `workspace_snapshot`
+  before deeper repo mapping, reducing tunnel round-trips for most sessions.
+- CI now syntax-checks and runs the Pro regression suite alongside agent,
+  security, and hardening tests.
+
+## [4.1.0] - 2026-06-30
+
+Version 4.1 hardens the MCP boundary and makes the dashboard more useful for
+operator-grade local coding sessions. The main goal is to move from "safe by
+convention" to explicit policy enforcement, measurable latency, and
+workspace-scoped state.
+
+### Added
+
+- Real `AGENT_POLICY` enforcement:
+  - `strict` blocks write/execute/mutation tools.
+  - `balanced` allows normal edit/test workflows but requires one-time local
+    approval for deletes, risky commands, installs/network calls, mutating git,
+    risky background processes, and destructive patch operations.
+  - `full` preserves the v4 broad integration behavior for trusted/local test
+    runs.
+- Local dashboard approval queue with approve-once / deny controls.
+- Latency telemetry: success rate, calls/minute, average latency, p50/p95/p99,
+  per-tool average and p95 latency, and recent-call duration.
+- Workspace-scoped data directories under `server/data/workspaces/<id>/` for
+  notes, checkpoints, index, patch history, backups, and approval records.
+- `test:hardening` regression suite covering browser-origin rejection, bearer
+  token handling, chunked body limits, policy approval replay prevention,
+  dashboard CSRF-style origin rejection, undo correctness, and workspace-state
+  isolation.
+
+### Changed
+
+- Server and tray versions are now `4.1.0`.
+- `/mcp` no longer accepts bearer tokens in the query string; use
+  `Authorization: Bearer <token>`.
+- Browser-origin MCP calls are rejected by default. Use `MCP_ALLOWED_ORIGINS`
+  only for explicitly trusted browser origins.
+- Request body limiting now counts streamed bytes, so chunked payloads cannot
+  bypass `MAX_BODY_BYTES`.
+- Profile settings are now applied at startup for mode, policy, extra roots,
+  ignored directories, and custom test/build/lint commands.
+- Undo now records created files, directory moves, rename destinations, and
+  workspace-local history so one workspace cannot undo another workspace's
+  changes.
+- CI keeps legacy broad tool/runtime tests in `AGENT_POLICY=full` and runs the
+  new hardening suite separately.
+
+### Upgrade notes
+
+- Default policy is now `AGENT_POLICY=balanced`. Keep it for day-to-day use;
+  use `strict` for read-only audits and `full` only for trusted automation.
+- `safe` mode is still a command guardrail, not an operating-system sandbox.
+  For true isolation, run the server in a VM, container, or WSL2 instance.
+- If you previously used `?token=...` in an MCP URL, switch to bearer headers.
+
 ## [4.0.0] - 2026-06-29
 
 Version 4 is the cross-platform and security-focused release. It promotes the
@@ -79,6 +183,9 @@ Windows tray workflow.
 - Dashboard port `8788` remains reserved by the tunnel client; use the default
   dashboard port `8790`.
 
+[4.2.0-pro]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.2.0-pro
+[4.1.1-pro]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.1.1-pro
+[4.1.0]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.1.0
 [4.0.0]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.0.0
 
 ## [3.0.0] - 2026-06-29

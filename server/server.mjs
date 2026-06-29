@@ -14,12 +14,13 @@ import {
   rm,
   appendFile,
   access,
-  copyFile
+  copyFile,
+  cp
 } from "node:fs/promises";
 import { writeFileSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -28,7 +29,8 @@ import { z } from "zod";
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
 // ----------------------------------------------------------------------------
-const VERSION = "4.0.0";
+const VERSION = "4.2.0-pro";
+const PRODUCT_TIER = "pro";
 const PORT = Number(process.env.PORT || 8787);
 // Bind to loopback by default. The local OpenAI tunnel-client forwards to this,
 // so we never need to listen on 0.0.0.0 (which would expose a shell to the LAN).
@@ -45,6 +47,13 @@ const DASHBOARD_HOST = process.env.DASHBOARD_HOST || "127.0.0.1";
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WORKSPACE = path.resolve(APP_DIR, "..", "agent-workspace");
 const PRIMARY_ROOT = path.resolve(process.env.AGENT_WORKSPACE || DEFAULT_WORKSPACE);
+const STARTUP_PROFILE = (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(PRIMARY_ROOT, ".agent", "profile.json"), "utf8"));
+  } catch {
+    return null;
+  }
+})();
 const EXTRA_ROOTS = parseExtraRoots();
 const ROOTS = dedupe([PRIMARY_ROOT, ...EXTRA_ROOTS]);
 
@@ -52,26 +61,35 @@ const ROOTS = dedupe([PRIMARY_ROOT, ...EXTRA_ROOTS]);
 // commands and absolute Windows paths inside commands are blocked.
 // "full": full power inside roots, only catastrophic system commands stay
 // blocked (unless AGENT_ALLOW_DANGEROUS=1).
-const MODE = String(process.env.AGENT_MODE || "safe").toLowerCase() === "full" ? "full" : "safe";
+const MODE = String(process.env.AGENT_MODE || STARTUP_PROFILE?.mode || "safe").toLowerCase() === "full" ? "full" : "safe";
 const ALLOW_DANGEROUS = process.env.AGENT_ALLOW_DANGEROUS === "1";
 
 // Optional defense-in-depth bearer token. If set, every /mcp request must send
-// Authorization: Bearer <token> (or ?token=). Leave empty when relying on the
+// Authorization: Bearer <token>. Leave empty when relying on the
 // OpenAI Secure MCP Tunnel, whose channel is already private to your account.
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
+const APPROVAL_TOKEN = process.env.AGENT_APPROVAL_TOKEN || "";
+const ALLOWED_ORIGINS = new Set(
+  String(process.env.MCP_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
 
 const DATA_DIR = path.resolve(APP_DIR, "data");
-const NOTES_PATH = path.resolve(DATA_DIR, "notes.json");
-const CHECKPOINT_PATH = path.resolve(DATA_DIR, "checkpoint.json");
+const WORKSPACE_ID = createHash("sha256").update(comparePath(PRIMARY_ROOT)).digest("hex").slice(0, 16);
+const WORKSPACE_DATA_DIR = path.join(DATA_DIR, "workspaces", WORKSPACE_ID);
+const NOTES_PATH = path.resolve(WORKSPACE_DATA_DIR, "notes.json");
+const CHECKPOINT_PATH = path.resolve(WORKSPACE_DATA_DIR, "checkpoint.json");
 const AUDIT_PATH = path.resolve(DATA_DIR, "audit.log");
 const METRICS_PATH = path.resolve(DATA_DIR, "metrics.json");
 
 // v2.1 Repo index cache
-const INDEX_PATH = path.resolve(DATA_DIR, "index.json");
+const INDEX_PATH = path.resolve(WORKSPACE_DATA_DIR, "index.json");
 
 // v2.2 Patch history
-const PATCH_HISTORY_PATH = path.resolve(DATA_DIR, "patch-history.json");
-const BACKUPS_DIR = path.resolve(DATA_DIR, "backups");
+const PATCH_HISTORY_PATH = path.resolve(WORKSPACE_DATA_DIR, "patch-history.json");
+const BACKUPS_DIR = path.resolve(WORKSPACE_DATA_DIR, "backups");
 
 // v2.5 Planner state
 const AGENT_STATE_DIR = path.join(PRIMARY_ROOT, ".agent", "state");
@@ -79,17 +97,17 @@ const TASK_PLAN_PATH = path.join(AGENT_STATE_DIR, "current-task.json");
 const DECISIONS_PATH = path.join(AGENT_STATE_DIR, "decisions.md");
 
 // v2.6 Approvals
-const APPROVALS_DIR = path.resolve(DATA_DIR, "approvals");
+const APPROVALS_DIR = path.resolve(WORKSPACE_DATA_DIR, "approvals");
 
 // v2.6 Policy
 const AGENT_POLICY = (() => {
-  const p = String(process.env.AGENT_POLICY || "balanced").toLowerCase();
+  const p = String(process.env.AGENT_POLICY || STARTUP_PROFILE?.policy || "balanced").toLowerCase();
   if (p === "strict" || p === "full") return p;
   return "balanced";
 })();
 
 // v2.8 Profile
-let WORKSPACE_PROFILE = null;
+let WORKSPACE_PROFILE = STARTUP_PROFILE;
 
 // Skills: reusable playbooks the agent can load on demand (Claude-style).
 // Discovered from: AGENT_SKILLS_DIR (env), the repo's shipped skills/, and each
@@ -121,7 +139,8 @@ const SKIP_DIRS = new Set([
   ".cache",
   "coverage",
   ".venv",
-  "__pycache__"
+  "__pycache__",
+  ...((Array.isArray(STARTUP_PROFILE?.ignoredDirs) ? STARTUP_PROFILE.ignoredDirs : []).map(String))
 ]);
 
 // Always blocked, even in full mode, unless AGENT_ALLOW_DANGEROUS=1.
@@ -173,6 +192,7 @@ const bootStartedAt = Date.now();
 // Bootstrap
 // ----------------------------------------------------------------------------
 await mkdir(DATA_DIR, { recursive: true });
+await mkdir(WORKSPACE_DATA_DIR, { recursive: true });
 await mkdir(PRIMARY_ROOT, { recursive: true });
 await mkdir(BACKUPS_DIR, { recursive: true });
 await mkdir(APPROVALS_DIR, { recursive: true });
@@ -202,15 +222,19 @@ function detectRg() {
 
 const httpServer = http.createServer(async (req, res) => {
   try {
-    log(`${req.method} ${req.url} ua=${req.headers["user-agent"] || ""}`);
-    setCors(res);
+    const requestUrl = new URL(req.url || "/", `http://${req.headers.host || HOST}`);
+    log(`${req.method} ${requestUrl.pathname} ua=${req.headers["user-agent"] || ""}`);
+    if (!originAllowed(req)) {
+      return sendJson(res, 403, { error: "browser_origin_not_allowed" });
+    }
+    setCors(req, res);
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       res.end();
       return;
     }
 
-    const url = new URL(req.url || "/", `http://${req.headers.host || HOST}`);
+    const url = requestUrl;
     if (req.method === "GET" && url.pathname === "/") {
       return sendHtml(res, homeHtml());
     }
@@ -218,6 +242,7 @@ const httpServer = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         status: "ok",
         version: VERSION,
+        tier: PRODUCT_TIER,
         mode: MODE,
         auth: AUTH_TOKEN ? "bearer" : "none",
         roots: ROOTS,
@@ -233,11 +258,13 @@ const httpServer = http.createServer(async (req, res) => {
           id: null
         });
       }
-      return handleMcp(req, res);
+      return await handleMcp(req, res);
     }
     return sendJson(res, 404, { error: "not_found" });
   } catch (error) {
-    return sendJson(res, 500, { error: error?.message || "Internal Server Error" });
+    if (!res.headersSent && !res.destroyed) {
+      return sendJson(res, error?.statusCode || 500, { error: error?.message || "Internal Server Error" });
+    }
   }
 });
 
@@ -263,12 +290,15 @@ if (DASHBOARD_PORT > 0) {
   dashServer = http.createServer((req, res) => {
     try {
       const url = new URL(req.url || "/", `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`);
+      if (!dashboardOriginAllowed(req)) return sendJson(res, 403, { error: "dashboard_origin_not_allowed" });
       if (url.pathname === "/metrics") return sendJson(res, 200, metricsSnapshot());
       if (url.pathname === "/ui") return sendHtml(res, dashboardHtml());
       // Mini-IDE JSON APIs (local-only, read-only except clear-metrics).
       if (url.pathname === "/api/tree") return void dashApiTree(url, res);
       if (url.pathname === "/api/file") return void dashApiFile(url, res);
       if (url.pathname === "/api/diff") return void dashApiDiff(url, res);
+      if (url.pathname === "/api/approvals" && req.method === "GET") return void dashApiApprovals(res);
+      if (url.pathname.startsWith("/api/approvals/") && req.method === "POST") return void dashApiApprovalAction(url, res);
       if (url.pathname === "/api/clear-metrics" && req.method === "POST") return void dashApiClearMetrics(res);
       if (url.pathname === "/") {
         res.writeHead(302, { Location: "/ui" });
@@ -313,8 +343,7 @@ function checkAuth(req, url) {
   if (!AUTH_TOKEN) return true;
   const header = req.headers["authorization"] || "";
   const fromHeader = header.startsWith("Bearer ") ? header.slice(7) : "";
-  const provided = fromHeader || url.searchParams.get("token") || "";
-  return safeEqual(provided, AUTH_TOKEN);
+  return safeEqual(fromHeader, AUTH_TOKEN);
 }
 
 function safeEqual(a, b) {
@@ -347,18 +376,19 @@ async function handleMcp(req, res) {
     server.close();
   });
   await server.connect(transport);
-  await transport.handleRequest(req, res);
+  const body = await readJsonBody(req, MAX_BODY_BYTES);
+  await transport.handleRequest(req, res, body);
 }
 
 const SERVER_INSTRUCTIONS = [
-  "You are operating over a network tunnel, so EACH tool call is slow. Minimize the number of calls.",
-  "WORKFLOW: (1) Start with repo_map to understand the project in one call. (2) Use preview_patch/validate_patch before apply_patch for large edits. (3) After editing source, run run_tests or run_changed_tests. (4) Before marking 'done', call review_diff for a code-review report. (5) For multi-step tasks, use task_plan + decision_log to maintain state across chats.",
-  "POLICY: Check policy_status if you are unsure whether an action is allowed. For risky operations (delete, install, network), call explain_risk first.",
+  "Local Coding Agent Pro MCP: tool calls cross a tunnel, so start with workspace_snapshot or workspace_doctor, then use read_many/search_text to batch work; prefer dedicated tools over run_command. Policy may require one-time local dashboard approval for risky delete/install/network/mutating-git actions; check policy_status/explain_risk first. File tools are root-confined, but run_command is not an OS sandbox.",
+  "WORKFLOW: (1) Start with workspace_snapshot for repo/git/test/policy/health in one call; use workspace_doctor when you need operational readiness. (2) Use preview_patch/validate_patch before apply_patch for large edits. (3) After editing source, run quality_gate, run_tests, or run_changed_tests. (4) Before marking 'done', call review_diff and session_report. (5) For multi-step tasks, use task_plan + decision_log to maintain state across chats.",
+  "POLICY: Check policy_status if you are unsure whether an action is allowed. In balanced policy, risky operations (delete, install, network, mutating git, risky processes) require one-time local approval.",
   "Use the DEDICATED tools instead of run_command for these — they are faster and cheaper:",
   "- Find files by name -> find_files (NOT dir/ls/Get-ChildItem/where).",
   "- Search file contents -> search_text with context= (NOT grep/findstr/Select-String).",
   "- Read files -> read_many for several, read_file for one (NOT type/cat/Get-Content).",
-  "- Map a repo -> repo_map first (returns tree + manifests + profile in one call).",
+  "- Map a repo -> workspace_snapshot first, repo_map for deeper tree detail; use workspace_doctor for readiness checks.",
   "- Create/edit files -> write_file / apply_patch (with a unified `diff` for many edits) (NOT echo>/Set-Content).",
   "- Symbol search -> repo_symbols for function/class definitions.",
   "Reserve run_command for builds, tests, installs, running programs, and git. When you do use it:",
@@ -529,10 +559,12 @@ function isWithinSkillsDir(p) {
 function reg(mcp, name, def, handler) {
   mcp.registerTool(name, def, async (args, extra) => {
     const startedAt = isoNow();
+    const startedMs = performance.now();
     const inChars = safeLen(args);
     let result;
     let ok = true;
     try {
+      await enforceToolPolicy(name, args ?? {});
       result = await handler(args ?? {}, extra);
     } catch (err) {
       ok = false;
@@ -540,9 +572,10 @@ function reg(mcp, name, def, handler) {
     }
     const success = ok && !result?.isError;
     const outChars = resultLen(result);
+    const durationMs = Math.max(0, Math.round((performance.now() - startedMs) * 10) / 10);
     const errText = success ? null : firstText(result).slice(0, 200);
-    audit({ ts: startedAt, tool: name, ok: success, inChars, outChars, error: errText || undefined, args: summarizeArgs(args) });
-    recordMetric(name, success, inChars, outChars, errText);
+    audit({ ts: startedAt, tool: name, ok: success, durationMs, inChars, outChars, error: errText || undefined, args: summarizeArgs(args) });
+    recordMetric(name, success, inChars, outChars, errText, durationMs);
     return result;
   });
 }
@@ -574,7 +607,9 @@ function registerBasicTools(mcp) {
       jsonResult({
         status: "ok",
         version: VERSION,
+        tier: PRODUCT_TIER,
         mode: MODE,
+        policy: AGENT_POLICY,
         allow_dangerous: ALLOW_DANGEROUS,
         auth: AUTH_TOKEN ? "bearer" : "none",
         roots: ROOTS,
@@ -584,8 +619,8 @@ function registerBasicTools(mcp) {
         running_processes: [...processes.values()].filter((p) => p.status === "running").length,
         safety:
           MODE === "full"
-            ? ["File and command tools work fully inside the configured roots.", "Catastrophic system commands stay blocked unless AGENT_ALLOW_DANGEROUS=1.", "Paths outside the roots are rejected."]
-            : ["File/command tools are confined to the roots.", "Destructive commands and absolute Windows paths in commands are blocked.", "Switch to AGENT_MODE=full for unrestricted in-root work."]
+            ? ["File tools are root-confined; command cwd is root-confined but command execution is not an OS sandbox.", "Catastrophic system commands stay blocked unless AGENT_ALLOW_DANGEROUS=1.", "Paths outside the roots are rejected by file tools."]
+            : ["File tools are root-confined; command cwd is root-confined but command execution is not an OS sandbox.", "Destructive commands and absolute Windows paths in commands are blocked.", "Switch to AGENT_MODE=full only for trusted automation."]
       })
   );
 
@@ -1009,16 +1044,16 @@ function registerFsWriteTools(mcp) {
     async ({ diff, operations }) => {
       if (diff && diff.trim()) {
         // Collect affected file paths for backup
-        const affectedPaths = [];
+        const affectedPaths = new Set();
         for (const line of diff.split(/\r?\n/)) {
-          if (line.startsWith("--- ") && !line.includes("/dev/null")) {
+          if ((line.startsWith("--- ") || line.startsWith("+++ ")) && !line.includes("/dev/null")) {
             const p = line.slice(4).replace(/^[ab]\//, "").trim();
             if (p) {
-              try { affectedPaths.push(resolvePath(p)); } catch { /* skip out-of-root paths */ }
+              try { affectedPaths.add(resolvePath(p)); } catch { /* apply will report invalid paths */ }
             }
           }
         }
-        if (affectedPaths.length > 0) await createBackupBatch("apply_patch_diff", affectedPaths);
+        if (affectedPaths.size > 0) await createBackupBatch("apply_patch_diff", [...affectedPaths]);
         const results = await applyUnifiedDiff(diff);
         const ok = results.every((r) => r.ok);
         return jsonResult({ ok, mode: "diff", applied: results.filter((r) => r.ok).length, results });
@@ -1028,8 +1063,8 @@ function registerFsWriteTools(mcp) {
       }
       // Backup existing files that will be modified/deleted
       const pathsToBackup = operations
-        .filter((op) => op.op === "update" || op.op === "delete" || op.op === "rename")
-        .map((op) => { try { return resolvePath(op.path); } catch { return null; } })
+        .flatMap((op) => [op.path, ...(op.op === "rename" && op.rename_to ? [op.rename_to] : [])])
+        .map((p) => { try { return resolvePath(p); } catch { return null; } })
         .filter(Boolean);
       if (pathsToBackup.length > 0) await createBackupBatch("apply_patch_ops", pathsToBackup);
       const results = [];
@@ -1072,7 +1107,7 @@ function registerFsWriteTools(mcp) {
     async ({ from, to }) => {
       const src = resolvePath(from);
       const dst = resolvePath(to);
-      await createBackupBatch("move_path", [src]);
+      await createBackupBatch("move_path", [src, dst]);
       await mkdir(path.dirname(dst), { recursive: true });
       await rename(src, dst);
       return jsonResult({ ok: true, from: toRel(src), to: toRel(dst) });
@@ -2076,6 +2111,8 @@ function emptyMetrics() {
     errorCalls: 0,
     inChars: 0,
     outChars: 0,
+    totalDurationMs: 0,
+    latencies: [],
     perTool: {},
     recent: [], // newest first, capped
     buckets: [] // per-minute { t, calls, tokens }, capped
@@ -2086,7 +2123,7 @@ function loadMetrics() {
   try {
     if (existsSync(METRICS_PATH)) {
       const m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
-      return { ...emptyMetrics(), ...m, perTool: m.perTool || {}, recent: m.recent || [], buckets: m.buckets || [] };
+      return { ...emptyMetrics(), ...m, perTool: m.perTool || {}, recent: m.recent || [], buckets: m.buckets || [], latencies: m.latencies || [] };
     }
   } catch {
     /* corrupt file -> start fresh */
@@ -2116,43 +2153,61 @@ function estTokens(chars) {
   return Math.ceil(chars / 4);
 }
 
-function recordMetric(tool, ok, inChars, outChars, errText) {
+function recordMetric(tool, ok, inChars, outChars, errText, durationMs = 0) {
   metrics.totalCalls += 1;
   if (ok) metrics.okCalls += 1;
   else metrics.errorCalls += 1;
   metrics.inChars += inChars;
   metrics.outChars += outChars;
+  metrics.totalDurationMs = (metrics.totalDurationMs || 0) + durationMs;
+  (metrics.latencies ||= []).push(durationMs);
+  if (metrics.latencies.length > 1000) metrics.latencies.splice(0, metrics.latencies.length - 1000);
 
-  const pt = (metrics.perTool[tool] ||= { calls: 0, ok: 0, err: 0, inChars: 0, outChars: 0 });
+  const pt = (metrics.perTool[tool] ||= { calls: 0, ok: 0, err: 0, inChars: 0, outChars: 0, totalDurationMs: 0, latencies: [] });
   pt.calls += 1;
   if (ok) pt.ok += 1;
   else pt.err += 1;
   pt.inChars += inChars;
   pt.outChars += outChars;
+  pt.totalDurationMs = (pt.totalDurationMs || 0) + durationMs;
+  (pt.latencies ||= []).push(durationMs);
+  if (pt.latencies.length > 300) pt.latencies.splice(0, pt.latencies.length - 300);
 
-  metrics.recent.unshift({ ts: isoNow(), tool, ok, inChars, outChars, tokens: estTokens(inChars + outChars), error: ok ? undefined : errText || undefined });
+  metrics.recent.unshift({ ts: isoNow(), tool, ok, duration_ms: durationMs, inChars, outChars, tokens: estTokens(inChars + outChars), error: ok ? undefined : errText || undefined });
   if (metrics.recent.length > 60) metrics.recent.length = 60;
 
   const minute = Math.floor(Date.now() / 60000) * 60000;
   let b = metrics.buckets[metrics.buckets.length - 1];
   if (!b || b.t !== minute) {
-    b = { t: minute, calls: 0, tokens: 0 };
+    b = { t: minute, calls: 0, tokens: 0, duration_ms: 0 };
     metrics.buckets.push(b);
     if (metrics.buckets.length > 180) metrics.buckets.shift();
   }
   b.calls += 1;
   b.tokens += estTokens(inChars + outChars);
+  b.duration_ms = (b.duration_ms || 0) + durationMs;
 
   scheduleSave();
 }
 
 function metricsSnapshot() {
+  const health = computeHealthInsights();
   const topTools = Object.entries(metrics.perTool)
-    .map(([name, v]) => ({ name, ...v, tokens: estTokens(v.inChars + v.outChars) }))
+    .map(([name, v]) => ({
+      name,
+      ...v,
+      latencies: undefined,
+      tokens: estTokens(v.inChars + v.outChars),
+      avg_ms: v.calls ? Math.round((v.totalDurationMs || 0) / v.calls) : 0,
+      p95_ms: percentile(v.latencies || [], 0.95)
+    }))
     .sort((a, b) => b.calls - a.calls);
+  const uptimeMinutes = Math.max((Date.now() - bootStartedAt) / 60000, 1 / 60);
   return {
     version: VERSION,
+    tier: PRODUCT_TIER,
     mode: MODE,
+    policy: AGENT_POLICY,
     roots: ROOTS,
     port: PORT,
     mcp_endpoint: `http://${HOST}:${PORT}/mcp`,
@@ -2167,10 +2222,94 @@ function metricsSnapshot() {
     est_tokens_in: estTokens(metrics.inChars),
     est_tokens_out: estTokens(metrics.outChars),
     est_tokens_total: estTokens(metrics.inChars + metrics.outChars),
+    success_rate: metrics.totalCalls ? Math.round((metrics.okCalls / metrics.totalCalls) * 10000) / 100 : 100,
+    calls_per_minute: Math.round((metrics.totalCalls / uptimeMinutes) * 100) / 100,
+    avg_latency_ms: metrics.totalCalls ? Math.round((metrics.totalDurationMs || 0) / metrics.totalCalls) : 0,
+    p50_latency_ms: percentile(metrics.latencies || [], 0.5),
+    p95_latency_ms: percentile(metrics.latencies || [], 0.95),
+    p99_latency_ms: percentile(metrics.latencies || [], 0.99),
+    health_score: health.score,
+    health_label: health.label,
+    pro_tips: health.tips,
+    bottlenecks: health.bottlenecks,
     top_tools: topTools,
     recent: metrics.recent,
     buckets: metrics.buckets
   };
+}
+
+function computeHealthInsights() {
+  const total = metrics.totalCalls || 0;
+  const success = total ? metrics.okCalls / total : 1;
+  const p95 = percentile(metrics.latencies || [], 0.95);
+  const avg = total ? (metrics.totalDurationMs || 0) / total : 0;
+  const readFileCalls = metrics.perTool?.read_file?.calls || 0;
+  const readManyCalls = metrics.perTool?.read_many?.calls || 0;
+  const runCommandCalls = metrics.perTool?.run_command?.calls || 0;
+  const searchCalls = metrics.perTool?.search_text?.calls || 0;
+  const recentErrors = (metrics.recent || []).filter((r) => !r.ok).length;
+  const tokensPerCall = total ? estTokens(metrics.inChars + metrics.outChars) / total : 0;
+
+  let score = 100;
+  const tips = [];
+  const bottlenecks = [];
+
+  if (success < 0.95) {
+    const hit = Math.min(30, Math.round((0.95 - success) * 120));
+    score -= hit;
+    bottlenecks.push("error_rate");
+    tips.push("Error rate is elevated; inspect Recent calls and fix repeated failing tools before continuing.");
+  }
+  if (p95 > 2500) {
+    score -= 18;
+    bottlenecks.push("latency_p95");
+    tips.push("P95 latency is high; batch reads with read_many/workspace_snapshot and avoid many tiny calls.");
+  } else if (p95 > 1200) {
+    score -= 10;
+    bottlenecks.push("latency_p95");
+    tips.push("Latency is noticeable; prefer fewer larger tool calls over repeated single-file calls.");
+  }
+  if (readFileCalls > Math.max(8, readManyCalls * 4)) {
+    score -= 8;
+    bottlenecks.push("chatty_reads");
+    tips.push("Many read_file calls detected; use read_many for related files to reduce tunnel round-trips.");
+  }
+  if (runCommandCalls > Math.max(8, searchCalls + readManyCalls)) {
+    score -= 6;
+    bottlenecks.push("command_heavy");
+    tips.push("High run_command usage; prefer repo_map/search_text/git_status/git_diff when possible.");
+  }
+  if (tokensPerCall > 3500) {
+    score -= 8;
+    bottlenecks.push("large_payloads");
+    tips.push("Large payloads per call; use line ranges, globs, and max_output_chars to keep context light.");
+  }
+  if (recentErrors >= 5) {
+    score -= 8;
+    bottlenecks.push("recent_errors");
+    tips.push("Several recent calls failed; clear the failing path/command before more edits.");
+  }
+  if (!tips.length) {
+    tips.push("Healthy session. Keep using workspace_snapshot, read_many, search_text, and targeted tests for best speed.");
+  }
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const label = score >= 90 ? "excellent" : score >= 75 ? "good" : score >= 55 ? "watch" : "attention";
+  return {
+    score,
+    label,
+    tips: tips.slice(0, 4),
+    bottlenecks,
+    avg_latency_ms: Math.round(avg),
+    p95_latency_ms: p95,
+    tokens_per_call: Math.round(tokensPerCall)
+  };
+}
+
+function percentile(values, q) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return Math.round(sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))]);
 }
 
 function safeLen(args) {
@@ -2214,13 +2353,15 @@ function parseExtraRoots() {
       if (!Array.isArray(parsed) || parsed.some((p) => typeof p !== "string")) {
         throw new Error("AGENT_EXTRA_ROOTS_JSON must be a JSON string array.");
       }
-      return parsed.map((p) => path.resolve(p));
+      return dedupe([...parsed, ...(Array.isArray(STARTUP_PROFILE?.extraRoots) ? STARTUP_PROFILE.extraRoots : [])]).map((p) => path.resolve(p));
     } catch (err) {
       console.warn(`Invalid AGENT_EXTRA_ROOTS_JSON ignored: ${err?.message || err}`);
     }
   }
-  return (process.env.AGENT_EXTRA_ROOTS || "")
-    .split(";")
+  return dedupe([
+    ...(process.env.AGENT_EXTRA_ROOTS || "").split(";"),
+    ...(Array.isArray(STARTUP_PROFILE?.extraRoots) ? STARTUP_PROFILE.extraRoots : [])
+  ])
     .map((s) => s.trim())
     .filter(Boolean)
     .map((p) => path.resolve(p));
@@ -2310,11 +2451,60 @@ function jsonResult(value) {
   return textResult(JSON.stringify(value));
 }
 
-function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function originAllowed(req) {
+  const origin = String(req.headers.origin || "");
+  if (!origin) return true;
+  return ALLOWED_ORIGINS.has(origin);
+}
+
+function dashboardOriginAllowed(req) {
+  const origin = String(req.headers.origin || "");
+  if (!origin) return true;
+  return new Set([
+    `http://127.0.0.1:${DASHBOARD_PORT}`,
+    `http://localhost:${DASHBOARD_PORT}`,
+    `http://[::1]:${DASHBOARD_PORT}`
+  ]).has(origin);
+}
+
+function setCors(req, res) {
+  const origin = String(req.headers.origin || "");
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, Mcp-Session-Id, mcp-session-id");
   res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+}
+
+function readJsonBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    let overflow = false;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        overflow = true;
+        return;
+      }
+      if (!overflow) chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (overflow) {
+        reject(Object.assign(new Error("Payload too large."), { statusCode: 413 }));
+        return;
+      }
+      try {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        resolve(raw ? JSON.parse(raw) : undefined);
+      } catch {
+        reject(Object.assign(new Error("Invalid JSON body."), { statusCode: 400 }));
+      }
+    });
+    req.on("error", reject);
+  });
 }
 
 function sendJson(res, status, value) {
@@ -2354,10 +2544,10 @@ function homeHtml() {
     <div class="panel"><p><strong>MCP endpoint</strong></p><p><code>http://${HOST}:${PORT}/mcp</code></p></div>
     <div class="panel"><p><strong>Tools</strong></p>
       <p><strong>Core:</strong> <code>workspace_info, repo_overview, list_files, find_files, read_file, read_many, stat_path, search_text, write_file, replace_in_file, apply_patch, make_dir, move_path, delete_path, run_command, proc_start, proc_list, proc_output, proc_stop, git, git_status, git_diff, list_skills, read_skill, create_skill, delete_skill, ping, save_note, list_notes, checkpoint, resume</code></p>
-      <p><strong>v2.1 repo intel:</strong> <code>project_profile, important_files, repo_map, repo_symbols, index_status</code></p>
+      <p><strong>Pro repo intel:</strong> <code>workspace_snapshot, workspace_doctor, project_profile, important_files, repo_map, repo_symbols, index_status</code></p>
       <p><strong>v2.2 patch engine:</strong> <code>preview_patch, validate_patch, undo_last_patch</code></p>
-      <p><strong>v2.3 test runner:</strong> <code>detect_test_commands, run_tests, run_build, run_lint, run_changed_tests</code></p>
-      <p><strong>v2.4 review:</strong> <code>review_diff, security_scan, todo_scan, change_summary</code></p>
+      <p><strong>v2.3 test runner:</strong> <code>quality_gate, detect_test_commands, run_tests, run_build, run_lint, run_changed_tests</code></p>
+      <p><strong>v2.4 review:</strong> <code>session_report, review_diff, security_scan, todo_scan, change_summary</code></p>
       <p><strong>v2.5 planner:</strong> <code>task_plan, task_state, decision_log</code></p>
       <p><strong>v2.6 policy:</strong> <code>policy_status, explain_risk, request_approval, approve_request, deny_request</code></p>
       <p><strong>v2.8 profile:</strong> <code>profile_status, reload_profile</code></p>
@@ -2522,6 +2712,11 @@ function dashboardHtml() {
   <div class="cards" id="cards"></div>
 
   <div class="panel">
+    <h3>Pro speed & safety tips</h3>
+    <div id="proTips"><div class="dim">Loading recommendations...</div></div>
+  </div>
+
+  <div class="panel">
     <h3>Tokens / phút (ước tính)</h3>
     <canvas id="chart" width="1140" height="220"></canvas>
     <div class="note">Ước tính = (ký tự input + output của tool) ÷ 4. Đây là token DỮ LIỆU đi qua connector, KHÔNG phải token tính phí của ChatGPT.</div>
@@ -2530,6 +2725,12 @@ function dashboardHtml() {
   <div class="grid">
     <div class="panel"><h3>Top tools</h3><table id="tools"></table></div>
     <div class="panel"><h3>Recent calls</h3><div id="recent"></div></div>
+  </div>
+
+  <div class="panel">
+    <h3>Pending approvals</h3>
+    <div id="approvals"><div class="dim">Không có yêu cầu đang chờ.</div></div>
+    <div class="note">Quyết định tại dashboard cục bộ, tách khỏi MCP client. Approval chỉ dùng một lần và được scope theo workspace.</div>
   </div>
 
   <div class="panel">
@@ -2549,17 +2750,21 @@ function dashboardHtml() {
 function h(n){ return (n==null?0:n).toLocaleString(); }
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function fmtDur(s){ var m=Math.floor(s/60),hh=Math.floor(m/60); if(hh>0) return hh+'h '+(m%60)+'m'; if(m>0) return m+'m '+(s%60)+'s'; return s+'s'; }
+function fmtMs(ms){ if(ms>=1000) return (ms/1000).toFixed(ms>=10000?1:2)+'s'; return Math.round(ms||0)+'ms'; }
 function card(label,val,sub){ return '<div class="card"><div class="clab">'+label+'</div><div class="cval">'+val+'</div><div class="csub">'+(sub||'')+'</div></div>'; }
 function renderCards(d){
   var html='';
+  html+=card('Health score', h(d.health_score||100)+'/100', (d.health_label||'excellent')+' - policy '+(d.policy||'balanced'));
   html+=card('Est. tokens (total)', h(d.est_tokens_total), 'in '+h(d.est_tokens_in)+' · out '+h(d.est_tokens_out));
   html+=card('Tool calls', h(d.total_calls), 'ok '+h(d.ok_calls)+' · err '+h(d.error_calls));
+  html+=card('Success rate', (d.success_rate||0).toFixed(2)+'%', (d.calls_per_minute||0).toFixed(2)+' calls/phút');
+  html+=card('Latency p95', fmtMs(d.p95_latency_ms), 'avg '+fmtMs(d.avg_latency_ms)+' · p99 '+fmtMs(d.p99_latency_ms));
   html+=card('Data qua connector', Math.round((d.in_chars+d.out_chars)/1024).toLocaleString()+' KB', 'tổng ký tự in/out');
   html+=card('Uptime', fmtDur(d.uptime_sec||0), 'mode '+d.mode);
   html+=card('Tiến trình nền', h(d.running_processes), 'đang chạy');
   document.getElementById('cards').innerHTML=html;
   document.getElementById('ver').textContent='v'+(d.version||'');
-  document.getElementById('modePill').textContent=(d.mode||'')+' mode';
+  document.getElementById('modePill').textContent=(d.mode||'')+' mode - '+(d.policy||'balanced')+' policy';
   document.getElementById('since').textContent=d.since? new Date(d.since).toLocaleString():'-';
   document.getElementById('roots').innerHTML=(d.roots||[]).map(function(r){return esc(r);}).join('<br>')||'-';
   document.getElementById('mcpep').textContent=d.mcp_endpoint||'-';
@@ -2579,8 +2784,8 @@ function renderChart(buckets){
   x.fillText('max '+max.toLocaleString()+' tok/phút',pad,16);
 }
 function renderTools(t){
-  var html='<tr><th>Tool</th><th>Calls</th><th>Err</th><th>Est tokens</th></tr>';
-  (t||[]).slice(0,15).forEach(function(r){ html+='<tr><td>'+r.name+'</td><td>'+h(r.calls)+'</td><td>'+h(r.err)+'</td><td>'+h(r.tokens)+'</td></tr>'; });
+  var html='<tr><th>Tool</th><th>Calls</th><th>Err</th><th>Avg</th><th>P95</th><th>Est tokens</th></tr>';
+  (t||[]).slice(0,15).forEach(function(r){ html+='<tr><td>'+r.name+'</td><td>'+h(r.calls)+'</td><td>'+h(r.err)+'</td><td>'+fmtMs(r.avg_ms)+'</td><td>'+fmtMs(r.p95_ms)+'</td><td>'+h(r.tokens)+'</td></tr>'; });
   document.getElementById('tools').innerHTML=html;
 }
 function renderRecent(r){
@@ -2588,14 +2793,40 @@ function renderRecent(r){
   (r||[]).slice(0,22).forEach(function(e){
     var tt=new Date(e.ts).toLocaleTimeString();
     var reason = (!e.ok && e.error) ? ' <span class="errmsg">'+esc(e.error)+'</span>' : '';
-    html+='<div class="row"><span class="t">'+tt+'</span> <span class="'+(e.ok?'ok':'err')+'">'+(e.ok?'OK':'ERR')+'</span> <b>'+e.tool+'</b> <span class="dim">'+h(e.tokens)+' tok</span>'+reason+'</div>';
+    html+='<div class="row"><span class="t">'+tt+'</span> <span class="'+(e.ok?'ok':'err')+'">'+(e.ok?'OK':'ERR')+'</span> <b>'+e.tool+'</b> <span class="dim">'+fmtMs(e.duration_ms)+' · '+h(e.tokens)+' tok</span>'+reason+'</div>';
   });
   document.getElementById('recent').innerHTML=html||'<div class="dim">Chưa có lệnh nào</div>';
+}
+function renderProTips(d){
+  var tips=d.pro_tips||[];
+  var bottlenecks=d.bottlenecks||[];
+  var html='';
+  if(bottlenecks.length) html+='<div class="row"><b>Bottlenecks:</b> <span class="dim">'+bottlenecks.map(esc).join(', ')+'</span></div>';
+  tips.forEach(function(t){ html+='<div class="row">'+esc(t)+'</div>'; });
+  document.getElementById('proTips').innerHTML=html||'<div class="dim">No recommendations yet.</div>';
+}
+async function loadApprovals(){
+  try{
+    var r=await fetch('/api/approvals',{cache:'no-store'}), d=await r.json(), html='';
+    (d.pending||[]).forEach(function(a){
+      html+='<div class="row"><b>'+esc(a.action)+'</b><div class="dim">'+esc(a.reason||'')+' · '+new Date(a.created).toLocaleString()+'</div>'+
+        '<button class="btn" data-id="'+esc(a.id)+'" data-action="approve" onclick="decideApprovalFromButton(this)">Approve once</button> '+
+        '<button class="btn" data-id="'+esc(a.id)+'" data-action="deny" onclick="decideApprovalFromButton(this)">Deny</button></div>';
+    });
+    document.getElementById('approvals').innerHTML=html||'<div class="dim">Không có yêu cầu đang chờ.</div>';
+  }catch(e){}
+}
+function decideApprovalFromButton(btn){
+  decideApproval(btn.getAttribute('data-id'), btn.getAttribute('data-action'));
+}
+async function decideApproval(id,action){
+  await fetch('/api/approvals/'+encodeURIComponent(id)+'/'+action,{method:'POST'});
+  loadApprovals();
 }
 async function tick(){
   try{
     var r=await fetch('/metrics',{cache:'no-store'}); var d=await r.json();
-    renderCards(d); renderChart(d.buckets); renderTools(d.top_tools); renderRecent(d.recent);
+    renderCards(d); renderChart(d.buckets); renderTools(d.top_tools); renderRecent(d.recent); renderProTips(d); loadApprovals();
     document.getElementById('status').textContent='● live'; document.getElementById('status').className='';
     document.getElementById('status').style.color='#2dd4bf';
   }catch(e){
@@ -2893,7 +3124,352 @@ async function scanSymbols(rootDir, { maxFiles = 500, maxMatches = 2000 } = {}) 
   return symbols;
 }
 
+async function collectImportantFiles(rootDir) {
+  const IMPORTANT_GLOBS = [
+    /^readme(\.\w+)?$/i,
+    /^agents\.md$/i,
+    /^package\.json$/i,
+    /^package-lock\.json$/i,
+    /^tsconfig.*\.json$/i,
+    /^\.env\.example$/i,
+    /^dockerfile$/i,
+    /^docker-compose.*\.(yml|yaml)$/i,
+    /^pubspec\.yaml$/i,
+    /^makefile$/i,
+    /^cargo\.toml$/i,
+    /^go\.mod$/i,
+    /^pyproject\.toml$/i,
+    /^requirements.*\.txt$/i,
+    /^\.eslintrc.*$/i,
+    /^\.prettierrc.*$/i,
+    /^\.gitignore$/i,
+    /^changelog\.md$/i,
+    /^security\.md$/i,
+    /^license$/i,
+    /^license\..*$/i
+  ];
+  const result = [];
+
+  let rootItems;
+  try {
+    rootItems = await readdir(rootDir, { withFileTypes: true });
+  } catch {
+    rootItems = [];
+  }
+  for (const e of rootItems) {
+    if (!e.isFile()) continue;
+    if (IMPORTANT_GLOBS.some((re) => re.test(e.name))) {
+      const abs = path.join(rootDir, e.name);
+      try {
+        const info = await stat(abs);
+        result.push({ path: toRel(abs), size: info.size });
+      } catch { /* skip */ }
+    }
+  }
+
+  const ghDir = path.join(rootDir, ".github", "workflows");
+  try {
+    const wfItems = await readdir(ghDir, { withFileTypes: true });
+    for (const e of wfItems) {
+      if (e.isFile() && /\.(yml|yaml)$/i.test(e.name)) {
+        const abs = path.join(ghDir, e.name);
+        try {
+          const info = await stat(abs);
+          result.push({ path: toRel(abs), size: info.size });
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* no .github/workflows */ }
+
+  return result.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function compactGitStatus(rootDir) {
+  const status = await spawnCapture("git", ["status", "--porcelain"], rootDir, DEFAULT_CMD_TIMEOUT);
+  if (status.exit_code !== 0) {
+    return {
+      is_git_repo: false,
+      clean: null,
+      error: (status.stderr || "not a git repository").split(/\r?\n/)[0]
+    };
+  }
+  const branchRes = await spawnCapture("git", ["rev-parse", "--abbrev-ref", "HEAD"], rootDir, DEFAULT_CMD_TIMEOUT);
+  const files = parsePorcelain(status.stdout || "");
+  const counts = {};
+  for (const f of files) {
+    const key = `${f.index || " "}${f.worktree || " "}`.trim() || "changed";
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return {
+    is_git_repo: true,
+    branch: (branchRes.stdout || "").trim() || null,
+    clean: files.length === 0,
+    count: files.length,
+    counts,
+    files: files.slice(0, 60)
+  };
+}
+
+function recommendNextActions({ profile, git, commands, health, truncated }) {
+  const actions = [];
+  if (health?.bottlenecks?.length) {
+    actions.push("Stabilize the session first: inspect health.tips and avoid repeating failing/high-latency call patterns.");
+  }
+  if (git?.is_git_repo && git.count > 0) {
+    actions.push("Review current changes with git_diff/change_summary before large edits.");
+  }
+  if (truncated) {
+    actions.push("Call repo_map with a narrower path/depth if you need more tree detail.");
+  }
+  if (commands?.test || commands?.build || commands?.lint) {
+    const gates = [commands.lint && "lint", commands.typecheck && "typecheck", commands.test && "test", commands.build && "build"].filter(Boolean).join(",");
+    actions.push(`Use quality_gate after edits (include: ${gates}) for one structured verification report.`);
+  } else {
+    actions.push("No test/build/lint command detected; provide explicit command when verifying changes.");
+  }
+  if ((profile?.languages || []).length) {
+    actions.push(`Detected stack: ${(profile.languages || []).join(", ")}${profile.frameworks?.length ? ` / ${(profile.frameworks || []).join(", ")}` : ""}.`);
+  }
+  actions.push("Prefer read_many/search_text/apply_patch batches to keep MCP tunnel round-trips low.");
+  return actions.slice(0, 6);
+}
+
+async function collectWorkspaceDoctor(rootDir) {
+  const [profile, commands, git, importantFiles] = await Promise.all([
+    detectProjectProfile(rootDir).catch(() => ({ languages: [], frameworks: [], packageManagers: [], manifests: [], scripts: {} })),
+    getTestCommandsMerged(rootDir).catch((error) => ({ error: error?.message || String(error) })),
+    compactGitStatus(rootDir),
+    collectImportantFiles(rootDir).catch(() => [])
+  ]);
+  const checks = [];
+  const add = (id, status, title, detail, recommendation) => checks.push({ id, status, title, detail, recommendation });
+
+  add("version", "pass", "Version", `Local Coding Agent ${VERSION} (${PRODUCT_TIER})`, null);
+  add("roots", ROOTS.length ? "pass" : "fail", "Workspace roots", `${ROOTS.length} root(s) configured`, ROOTS.length ? null : "Set AGENT_WORKSPACE to the repository you want to work on.");
+  add("policy", AGENT_POLICY === "balanced" ? "pass" : "warn", "Policy", `AGENT_POLICY=${AGENT_POLICY}`, AGENT_POLICY === "full" ? "Use balanced for day-to-day work unless this is trusted automation." : AGENT_POLICY === "strict" ? "Strict is safe but write/test flows will be blocked." : null);
+  add("mode", MODE === "safe" ? "pass" : "warn", "Command mode", `AGENT_MODE=${MODE}`, MODE === "full" ? "Use safe mode for normal agent work; full is best reserved for trusted automation." : null);
+  add("auth", AUTH_TOKEN ? "pass" : "warn", "MCP auth", AUTH_TOKEN ? "Bearer auth enabled" : "MCP_AUTH_TOKEN is not set", AUTH_TOKEN ? null : "Set MCP_AUTH_TOKEN if exposing beyond the private OpenAI tunnel/local loopback.");
+  add("origin", ALLOWED_ORIGINS.size ? "warn" : "pass", "Browser Origin policy", ALLOWED_ORIGINS.size ? `${ALLOWED_ORIGINS.size} browser origin(s) allowed` : "Browser-origin MCP calls blocked by default", ALLOWED_ORIGINS.size ? "Keep MCP_ALLOWED_ORIGINS as narrow as possible." : null);
+  add("rg", RG_BIN ? "pass" : "warn", "ripgrep", RG_BIN ? `Found: ${RG_BIN}` : "ripgrep not found; search_text falls back to slower scanning", RG_BIN ? null : "Install ripgrep for faster searches on large repos.");
+  add("git", git.is_git_repo ? "pass" : "warn", "Git repository", git.is_git_repo ? `${git.clean ? "clean" : `${git.count} changed file(s)`} on ${git.branch || "unknown branch"}` : "Not a git repo or git unavailable", git.is_git_repo ? (git.count > 0 ? "Review current changes before large edits." : null) : "Initialize git or run from the repository root for better change tracking.");
+  add("profile", (profile.languages || []).length ? "pass" : "warn", "Project profile", (profile.languages || []).length ? `Detected ${(profile.languages || []).join(", ")}` : "No language/framework detected", (profile.languages || []).length ? null : "Add standard manifests or verify AGENT_WORKSPACE points at the repo root.");
+  add("commands", commands?.test || commands?.build || commands?.lint ? "pass" : "warn", "Quality commands", JSON.stringify(commands), commands?.test || commands?.build || commands?.lint ? null : "Add package scripts or use quality_gate with explicit commands through profile.testCommands.");
+  const hasReadme = importantFiles.some((f) => /^README/i.test(path.basename(f.path)));
+  const hasSecurityDoc = importantFiles.some((f) => /^security\.md$/i.test(path.basename(f.path)));
+  add("docs", hasReadme ? "pass" : "warn", "README", "README presence checked", hasReadme ? null : "Add a README so agents and contributors understand the repo quickly.");
+  add("security_doc", hasSecurityDoc ? "pass" : "warn", "Security docs", "SECURITY.md presence checked", hasSecurityDoc ? null : "Add SECURITY.md for MCP/local-command safety expectations.");
+
+  const fail = checks.filter((c) => c.status === "fail").length;
+  const warn = checks.filter((c) => c.status === "warn").length;
+  const score = Math.max(0, Math.min(100, 100 - fail * 25 - warn * 6));
+  const status = fail ? "fail" : warn ? "warn" : "pass";
+  return {
+    status,
+    score,
+    root: toRel(rootDir),
+    version: VERSION,
+    tier: PRODUCT_TIER,
+    mode: MODE,
+    policy: AGENT_POLICY,
+    checks,
+    summary: { pass: checks.filter((c) => c.status === "pass").length, warn, fail },
+    profile,
+    commands,
+    git,
+    important_files: importantFiles.slice(0, 80),
+    recommendations: checks.filter((c) => c.recommendation).map((c) => ({ id: c.id, recommendation: c.recommendation })).slice(0, 10)
+  };
+}
+
+function normalizeGatePlan(include, commands) {
+  const wanted = include?.length ? include : ["lint", "typecheck", "test", "build"];
+  const allowed = new Set(["lint", "typecheck", "test", "build"]);
+  return wanted
+    .filter((name) => allowed.has(name))
+    .map((name) => ({ name, command: commands?.[name] || null }));
+}
+
+async function runQualityGate({ cwd = ".", include, timeout_ms = 120_000, stop_on_failure = true, dry_run = false }) {
+  const rootDir = resolvePath(cwd);
+  const commands = await getTestCommandsMerged(rootDir);
+  const plan = normalizeGatePlan(include, commands);
+  const started = Date.now();
+  const gates = [];
+  if (dry_run) {
+    return { ok: true, dry_run: true, root: toRel(rootDir), plan, commands, duration_ms: 0 };
+  }
+  for (const gate of plan) {
+    if (!gate.command) {
+      gates.push({ name: gate.name, status: "skipped", ok: true, reason: "command not detected" });
+      continue;
+    }
+    assertCommandAllowed(gate.command);
+    const result = await runGatedCommand(gate.command, rootDir, timeout_ms);
+    const entry = { name: gate.name, status: result.ok ? "pass" : "fail", ...result };
+    gates.push(entry);
+    if (gate.name === "test") recordTestRun(gate.command, result.ok, result.summary);
+    if (!result.ok && stop_on_failure) break;
+  }
+  const failed = gates.filter((g) => g.status === "fail");
+  const ran = gates.filter((g) => g.status === "pass" || g.status === "fail");
+  return {
+    ok: failed.length === 0,
+    root: toRel(rootDir),
+    commands,
+    gates,
+    ran: ran.length,
+    skipped: gates.filter((g) => g.status === "skipped").length,
+    failed: failed.length,
+    duration_ms: Date.now() - started
+  };
+}
+
+async function buildSessionReport(rootDir) {
+  const [doctor, git] = await Promise.all([
+    collectWorkspaceDoctor(rootDir),
+    compactGitStatus(rootDir)
+  ]);
+  const snapshot = metricsSnapshot();
+  return {
+    kind: "session_report",
+    version: VERSION,
+    tier: PRODUCT_TIER,
+    ts: isoNow(),
+    root: toRel(rootDir),
+    mode: MODE,
+    policy: AGENT_POLICY,
+    health: {
+      score: snapshot.health_score,
+      label: snapshot.health_label,
+      bottlenecks: snapshot.bottlenecks,
+      tips: snapshot.pro_tips
+    },
+    metrics: {
+      total_calls: snapshot.total_calls,
+      ok_calls: snapshot.ok_calls,
+      error_calls: snapshot.error_calls,
+      success_rate: snapshot.success_rate,
+      calls_per_minute: snapshot.calls_per_minute,
+      avg_latency_ms: snapshot.avg_latency_ms,
+      p95_latency_ms: snapshot.p95_latency_ms,
+      est_tokens_total: snapshot.est_tokens_total,
+      top_tools: snapshot.top_tools.slice(0, 12).map((t) => ({ name: t.name, calls: t.calls, err: t.err, tokens: t.tokens, avg_ms: t.avg_ms, p95_ms: t.p95_ms }))
+    },
+    git,
+    doctor: {
+      status: doctor.status,
+      score: doctor.score,
+      summary: doctor.summary,
+      recommendations: doctor.recommendations
+    },
+    recent_errors: (metrics.recent || []).filter((r) => !r.ok).slice(0, 10)
+  };
+}
+
 function registerRepoIntelTools(mcp) {
+  reg(
+    mcp,
+    "workspace_doctor",
+    {
+      title: "Workspace doctor Pro",
+      description: "PRO readiness check for the active workspace: roots, safety settings, auth/origin posture, git state, ripgrep, project profile, quality commands, docs, score, and recommendations.",
+      inputSchema: {
+        path: z.string().optional().describe("Root dir to inspect (default: primary root).")
+      }
+    },
+    async ({ path: rel = "." }) => {
+      const rootDir = resolvePath(rel);
+      return jsonResult(await collectWorkspaceDoctor(rootDir));
+    }
+  );
+
+  reg(
+    mcp,
+    "workspace_snapshot",
+    {
+      title: "Workspace snapshot Pro",
+      description: "PRO one-call briefing: roots, mode/policy, project profile, important files, compact tree, git status, test/build/lint commands, metrics health, and recommended next actions. Use this FIRST to reduce MCP round-trips.",
+      inputSchema: {
+        path: z.string().optional().describe("Root dir to inspect (default: primary root)."),
+        depth: z.number().int().min(1).max(5).optional().describe("Tree depth (default 3)."),
+        max_entries: z.number().int().min(20).max(1200).optional().describe("Max tree entries (default 350)."),
+        include_symbols: z.boolean().optional().describe("Include compact symbol sample (default false)."),
+        refresh: z.boolean().optional().describe("Refresh cached profile/index.")
+      }
+    },
+    async ({ path: rel = ".", depth = 3, max_entries = 350, include_symbols = false, refresh = false }) => {
+      const rootDir = resolvePath(rel);
+      const idx = await readRepoIndex();
+      let profile;
+      if (!refresh && idx && indexFresh(idx) && idx.profile && idx.profile.rootDir === rootDir) {
+        profile = idx.profile;
+      } else {
+        profile = await detectProjectProfile(rootDir);
+        const newIdx = { ...(idx || {}), ts: isoNow(), profile: { rootDir, ...profile } };
+        await writeRepoIndex(newIdx);
+        profile = newIdx.profile;
+      }
+
+      const [{ tree, dirs, files }, importantFiles, commands, git, symbols] = await Promise.all([
+        buildTree(rootDir, depth, max_entries),
+        collectImportantFiles(rootDir),
+        getTestCommandsMerged(rootDir).catch((error) => ({ error: error?.message || String(error) })),
+        compactGitStatus(rootDir),
+        include_symbols ? scanSymbols(rootDir, { maxFiles: 120, maxMatches: 80 }).catch(() => []) : Promise.resolve([])
+      ]);
+      const health = computeHealthInsights();
+      const metricSummary = metricsSnapshot();
+      const next = recommendNextActions({ profile, git, commands, health, treeCount: tree.length, truncated: tree.length >= max_entries });
+
+      return jsonResult({
+        kind: "workspace_snapshot",
+        pro: true,
+        version: VERSION,
+        tier: PRODUCT_TIER,
+        ts: isoNow(),
+        root: toRel(rootDir),
+        roots: ROOTS,
+        mode: MODE,
+        policy: AGENT_POLICY,
+        auth: AUTH_TOKEN ? "bearer" : "none",
+        safety: {
+          file_tools_root_confined: true,
+          command_cwd_root_confined: true,
+          command_os_sandbox: false,
+          browser_origin_mcp_default: ALLOWED_ORIGINS.size ? "allowlist" : "blocked"
+        },
+        profile: {
+          languages: profile.languages || [],
+          frameworks: profile.frameworks || [],
+          packageManagers: profile.packageManagers || [],
+          manifests: profile.manifests || [],
+          scripts: profile.scripts || {}
+        },
+        commands,
+        git,
+        tree: {
+          depth,
+          dirs: dirs.length,
+          files: files.length,
+          truncated: tree.length >= max_entries,
+          entries: tree.map(toRel).slice(0, max_entries)
+        },
+        important_files: importantFiles.slice(0, 80),
+        symbols: include_symbols ? symbols.slice(0, 80) : undefined,
+        metrics: {
+          total_calls: metricSummary.total_calls,
+          success_rate: metricSummary.success_rate,
+          calls_per_minute: metricSummary.calls_per_minute,
+          avg_latency_ms: metricSummary.avg_latency_ms,
+          p95_latency_ms: metricSummary.p95_latency_ms,
+          top_tools: metricSummary.top_tools.slice(0, 8).map((t) => ({ name: t.name, calls: t.calls, err: t.err, avg_ms: t.avg_ms, p95_ms: t.p95_ms }))
+        },
+        health,
+        next_best_actions: next
+      });
+    }
+  );
+
   reg(
     mcp,
     "project_profile",
@@ -2931,63 +3507,7 @@ function registerRepoIntelTools(mcp) {
     },
     async ({ path: rel = "." }) => {
       const rootDir = resolvePath(rel);
-      const IMPORTANT_GLOBS = [
-        /^readme(\.\w+)?$/i,
-        /^agents\.md$/i,
-        /^package\.json$/i,
-        /^tsconfig.*\.json$/i,
-        /^\.env\.example$/i,
-        /^dockerfile$/i,
-        /^docker-compose.*\.(yml|yaml)$/i,
-        /^pubspec\.yaml$/i,
-        /^makefile$/i,
-        /^cargo\.toml$/i,
-        /^go\.mod$/i,
-        /^pyproject\.toml$/i,
-        /^requirements.*\.txt$/i,
-        /^\.eslintrc.*$/i,
-        /^\.prettierrc.*$/i,
-        /^\.gitignore$/i,
-        /^changelog\.md$/i,
-        /^security\.md$/i,
-        /^license$/i,
-        /^license\..*$/i
-      ];
-      const result = [];
-
-      // Root-level files
-      let rootItems;
-      try {
-        rootItems = await readdir(rootDir, { withFileTypes: true });
-      } catch {
-        rootItems = [];
-      }
-      for (const e of rootItems) {
-        if (!e.isFile()) continue;
-        if (IMPORTANT_GLOBS.some((re) => re.test(e.name))) {
-          const abs = path.join(rootDir, e.name);
-          try {
-            const info = await stat(abs);
-            result.push({ path: toRel(abs), size: info.size });
-          } catch { /* skip */ }
-        }
-      }
-
-      // .github/workflows/
-      const ghDir = path.join(rootDir, ".github", "workflows");
-      try {
-        const wfItems = await readdir(ghDir, { withFileTypes: true });
-        for (const e of wfItems) {
-          if (e.isFile() && /\.(yml|yaml)$/i.test(e.name)) {
-            const abs = path.join(ghDir, e.name);
-            try {
-              const info = await stat(abs);
-              result.push({ path: toRel(abs), size: info.size });
-            } catch { /* skip */ }
-          }
-        }
-      } catch { /* no .github/workflows */ }
-
+      const result = await collectImportantFiles(rootDir);
       return jsonResult({ count: result.length, files: result });
     }
   );
@@ -3112,27 +3632,29 @@ async function createBackupBatch(tool, filePaths) {
   for (const fp of filePaths) {
     let hadContent = false;
     try {
-      const abs = path.resolve(fp);
+      const abs = resolvePath(fp);
       if (existsSync(abs)) {
-        const content = await readFile(abs, "utf8");
-        const rel = path.relative(PRIMARY_ROOT, abs).split(path.sep).join("/");
-        const backupFile = path.join(batchDir, rel.replace(/\//g, "__"));
-        await mkdir(path.dirname(backupFile), { recursive: true });
-        await writeFile(backupFile, content, "utf8");
+        const info = await stat(abs);
+        const backupFile = path.join(batchDir, `${files.length}-${path.basename(abs) || "root"}`);
+        if (info.isDirectory()) await cp(abs, backupFile, { recursive: true, force: true });
+        else await copyFile(abs, backupFile);
         hadContent = true;
-        files.push({ path: fp, backupFile, hadContent });
+        files.push({ path: abs, backupFile, hadContent, kind: info.isDirectory() ? "directory" : "file" });
       } else {
-        files.push({ path: fp, backupFile: null, hadContent: false });
+        files.push({ path: abs, backupFile: null, hadContent: false, kind: "missing" });
       }
     } catch {
-      files.push({ path: fp, backupFile: null, hadContent });
+      files.push({ path: String(fp), backupFile: null, hadContent, kind: "unknown" });
     }
   }
 
   const record = { id: batchId, ts: isoNow(), tool, batchDir, files };
   const history = await readPatchHistory();
   history.push(record);
-  if (history.length > 50) history.splice(0, history.length - 50); // keep last 50 batches
+  if (history.length > 50) {
+    const expired = history.splice(0, history.length - 50);
+    for (const old of expired) rm(old.batchDir, { recursive: true, force: true }).catch(() => {});
+  }
   await writePatchHistory(history);
   return record;
 }
@@ -3324,14 +3846,16 @@ function registerPatchEngineTools(mcp) {
       const errors = [];
       for (const f of batch.files) {
         try {
-          const abs = path.resolve(f.path);
+          const abs = resolvePath(f.path);
           if (f.hadContent && f.backupFile && existsSync(f.backupFile)) {
-            const backup = await readFile(f.backupFile, "utf8");
+            await rm(abs, { recursive: true, force: true });
             await mkdir(path.dirname(abs), { recursive: true });
-            await writeFile(abs, backup, "utf8");
+            if (f.kind === "directory") await cp(f.backupFile, abs, { recursive: true, force: true });
+            else if (f.kind === "file") await copyFile(f.backupFile, abs);
+            else await writeFile(abs, await readFile(f.backupFile, "utf8"), "utf8");
             restored.push({ path: f.path, action: "restored" });
           } else if (!f.hadContent && existsSync(abs)) {
-            await rm(abs, { force: true });
+            await rm(abs, { recursive: true, force: true });
             restored.push({ path: f.path, action: "removed (was created)" });
           } else {
             restored.push({ path: f.path, action: "skipped (no backup)" });
@@ -3477,6 +4001,24 @@ async function runGatedCommand(command, cwd, timeoutMs = 120_000) {
 function registerTestRunnerTools(mcp) {
   reg(
     mcp,
+    "quality_gate",
+    {
+      title: "Quality gate Pro",
+      description: "PRO structured verification runner. Detects and runs lint/typecheck/test/build commands in order, with compact pass/fail summaries. Use after code edits before reporting done.",
+      inputSchema: {
+        cwd: z.string().optional(),
+        include: z.array(z.enum(["lint", "typecheck", "test", "build"])).optional().describe("Gate order/subset. Default: lint,typecheck,test,build."),
+        timeout_ms: z.number().int().min(1000).max(600000).optional(),
+        stop_on_failure: z.boolean().optional(),
+        dry_run: z.boolean().optional().describe("Return planned gates without executing.")
+      }
+    },
+    async ({ cwd = ".", include, timeout_ms = 120_000, stop_on_failure = true, dry_run = false }) =>
+      jsonResult(await runQualityGate({ cwd, include, timeout_ms, stop_on_failure, dry_run }))
+  );
+
+  reg(
+    mcp,
     "detect_test_commands",
     {
       title: "Detect test commands",
@@ -3485,7 +4027,7 @@ function registerTestRunnerTools(mcp) {
     },
     async ({ path: rel = "." }) => {
       const rootDir = resolvePath(rel);
-      const cmds = await detectTestCommands(rootDir);
+      const cmds = await getTestCommandsMerged(rootDir);
       const profile = await detectProjectProfile(rootDir);
       return jsonResult({ commands: cmds, languages: profile.languages, packageManagers: profile.packageManagers });
     }
@@ -3507,7 +4049,7 @@ function registerTestRunnerTools(mcp) {
       const rootDir = resolvePath(cwd);
       let cmd = command;
       if (!cmd) {
-        const cmds = await detectTestCommands(rootDir);
+        const cmds = await getTestCommandsMerged(rootDir);
         cmd = cmds.test;
         if (!cmd) throw new Error("Could not detect test command. Provide command explicitly.");
       }
@@ -3534,7 +4076,7 @@ function registerTestRunnerTools(mcp) {
       const rootDir = resolvePath(cwd);
       let cmd = command;
       if (!cmd) {
-        const cmds = await detectTestCommands(rootDir);
+        const cmds = await getTestCommandsMerged(rootDir);
         cmd = cmds.build;
         if (!cmd) throw new Error("Could not detect build command. Provide command explicitly.");
       }
@@ -3559,7 +4101,7 @@ function registerTestRunnerTools(mcp) {
       const rootDir = resolvePath(cwd);
       let cmd = command;
       if (!cmd) {
-        const cmds = await detectTestCommands(rootDir);
+        const cmds = await getTestCommandsMerged(rootDir);
         cmd = cmds.lint;
         if (!cmd) throw new Error("Could not detect lint command. Provide command explicitly.");
       }
@@ -3608,7 +4150,7 @@ function registerTestRunnerTools(mcp) {
         }
       }
 
-      const cmds = await detectTestCommands(rootDir);
+      const cmds = await getTestCommandsMerged(rootDir);
       if (testFiles.size === 0) {
         // Fall back to full test run
         if (!cmds.test) throw new Error("No changed test files found and no test command detected.");
@@ -3651,6 +4193,22 @@ function recordTestRun(command, ok, summary) {
 // ============================================================================
 
 function registerReviewTools(mcp) {
+  reg(
+    mcp,
+    "session_report",
+    {
+      title: "Session report Pro",
+      description: "PRO end-of-session report: health score, bottlenecks, metrics, top tools, git state, doctor summary, recommendations, and recent errors.",
+      inputSchema: {
+        cwd: z.string().optional().describe("Repository directory inside a root (default primary root).")
+      }
+    },
+    async ({ cwd = "." }) => {
+      const rootDir = resolvePath(cwd);
+      return jsonResult(await buildSessionReport(rootDir));
+    }
+  );
+
   reg(
     mcp,
     "review_diff",
@@ -4004,6 +4562,92 @@ const POLICY_RULES = {
   }
 };
 
+const STRICT_MUTATION_TOOLS = new Set([
+  "save_note", "checkpoint", "write_file", "replace_in_file", "apply_patch", "make_dir", "move_path", "delete_path",
+  "run_command", "proc_start", "proc_stop", "git", "create_skill", "delete_skill", "undo_last_patch",
+  "quality_gate", "run_tests", "run_build", "run_lint", "run_changed_tests", "task_plan", "task_state", "decision_log"
+]);
+
+function approvalActionForTool(tool, args) {
+  if (tool === "delete_path") return `delete_path:${String(args.path || "")}`;
+  if (tool === "delete_skill") return `delete_skill:${String(args.name || "")}`;
+  if (tool === "run_command" || tool === "proc_start") {
+    const command = String(args.command || "");
+    return policyCheck(command).needsApproval ? `${tool}:${command}` : null;
+  }
+  if (tool === "git") {
+    const argv = Array.isArray(args.args) ? args.args : [];
+    const sub = (argv.find((a) => !String(a).startsWith("-")) || "").toLowerCase();
+    return GIT_READONLY.has(sub) || argv.some((a) => /^(--version|--help)$/i.test(String(a)))
+      ? null
+      : `git:${JSON.stringify(argv)}`;
+  }
+  if (tool === "apply_patch") {
+    const deletes = Array.isArray(args.operations) && args.operations.some((op) => op?.op === "delete");
+    const diffDeletes = typeof args.diff === "string" && /^\+\+\+\s+\/dev\/null$/m.test(args.diff);
+    if (deletes || diffDeletes) return `apply_patch:delete`;
+  }
+  return null;
+}
+
+async function dashApiApprovals(res) {
+  try {
+    const records = [];
+    for (const file of await readdir(APPROVALS_DIR).catch(() => [])) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const record = JSON.parse(await readFile(path.join(APPROVALS_DIR, file), "utf8"));
+        if (record.status === "pending") records.push(record);
+      } catch {}
+    }
+    records.sort((a, b) => String(b.created).localeCompare(String(a.created)));
+    return sendJson(res, 200, { pending: records });
+  } catch (error) {
+    return sendJson(res, 500, { error: error?.message || "error" });
+  }
+}
+
+async function dashApiApprovalAction(url, res) {
+  try {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const id = parts[2] || "";
+    const action = parts[3] || "";
+    if (!/^[0-9a-f-]{36}$/i.test(id) || !["approve", "deny"].includes(action)) {
+      return sendJson(res, 400, { error: "invalid approval action" });
+    }
+    const fp = path.join(APPROVALS_DIR, `${id}.json`);
+    if (!existsSync(fp)) return sendJson(res, 404, { error: "approval not found" });
+    const record = JSON.parse(await readFile(fp, "utf8"));
+    if (record.status !== "pending") return sendJson(res, 409, { error: `approval is ${record.status}` });
+    record.status = action === "approve" ? "approved" : "denied";
+    record[`${record.status}_at`] = isoNow();
+    record.approved_via = "local_dashboard";
+    await writeFile(fp, JSON.stringify(record, null, 2), "utf8");
+    audit({ ts: isoNow(), event: "approval_decision", id, action: record.action, status: record.status, via: "local_dashboard" });
+    return sendJson(res, 200, { ok: true, id, status: record.status });
+  } catch (error) {
+    return sendJson(res, 500, { error: error?.message || "error" });
+  }
+}
+
+async function enforceToolPolicy(tool, args) {
+  if (["policy_status", "explain_risk", "request_approval", "approve_request", "deny_request"].includes(tool)) return;
+  if (AGENT_POLICY === "full") return;
+  if (AGENT_POLICY === "strict" && STRICT_MUTATION_TOOLS.has(tool)) {
+    throw new Error(`Tool "${tool}" is blocked by policy=strict.`);
+  }
+  if (AGENT_POLICY !== "balanced") return;
+  const action = approvalActionForTool(tool, args);
+  if (!action) return;
+  const approval = await checkApprovalExists(action);
+  if (!approval) {
+    throw new Error(`Approval required. Call request_approval with action=${JSON.stringify(action)}, then have the local operator approve it.`);
+  }
+  approval.status = "consumed";
+  approval.consumed_at = isoNow();
+  await writeFile(path.join(APPROVALS_DIR, `${approval.id}.json`), JSON.stringify(approval, null, 2), "utf8");
+}
+
 function classifyAction(action) {
   const patterns = {
     install: /\b(npm|pip|pip3|yarn|pnpm|cargo|apt|brew|gem|composer)\s+install\b/i,
@@ -4143,10 +4787,12 @@ function registerPolicyTools(mcp) {
     "approve_request",
     {
       title: "Approve request",
-      description: "Approve a pending action request by id.",
-      inputSchema: { id: z.string().min(1) }
+      description: "Approve a pending action using the local operator token configured in AGENT_APPROVAL_TOKEN.",
+      inputSchema: { id: z.string().min(1), approval_token: z.string().min(1) }
     },
-    async ({ id }) => {
+    async ({ id, approval_token }) => {
+      if (!APPROVAL_TOKEN) throw new Error("MCP approval is disabled. Set AGENT_APPROVAL_TOKEN locally or approve out of band.");
+      if (!safeEqual(approval_token, APPROVAL_TOKEN)) throw new Error("Invalid local operator approval token.");
       const fp = path.join(APPROVALS_DIR, `${id}.json`);
       if (!existsSync(fp)) throw new Error(`No approval request with id ${id}`);
       const rec = JSON.parse(await readFile(fp, "utf8"));
@@ -4162,10 +4808,12 @@ function registerPolicyTools(mcp) {
     "deny_request",
     {
       title: "Deny request",
-      description: "Deny a pending action request by id.",
-      inputSchema: { id: z.string().min(1) }
+      description: "Deny a pending action using the local operator token configured in AGENT_APPROVAL_TOKEN.",
+      inputSchema: { id: z.string().min(1), approval_token: z.string().min(1) }
     },
-    async ({ id }) => {
+    async ({ id, approval_token }) => {
+      if (!APPROVAL_TOKEN) throw new Error("MCP denial is disabled. Set AGENT_APPROVAL_TOKEN locally or deny out of band.");
+      if (!safeEqual(approval_token, APPROVAL_TOKEN)) throw new Error("Invalid local operator approval token.");
       const fp = path.join(APPROVALS_DIR, `${id}.json`);
       if (!existsSync(fp)) throw new Error(`No approval request with id ${id}`);
       const rec = JSON.parse(await readFile(fp, "utf8"));

@@ -35,6 +35,8 @@ jobs:
           node --check test-agent.mjs
           node --check test-security.mjs
           node --check security-test.mjs
+          node --check test-pro.mjs
+          node --check test-hardening.mjs
           node --check ../evals/run.mjs
       - name: Run MCP and runtime-security tests
         working-directory: server
@@ -45,6 +47,7 @@ jobs:
           $env:PORT = "$port"
           $env:AGENT_WORKSPACE = $ws
           $env:AGENT_MODE = "safe"
+          $env:AGENT_POLICY = "full"
           $env:AGENT_EXTRA_ROOTS_JSON = "[]"
           $env:DASHBOARD_PORT = "0"
           $env:TEST_ENDPOINT = "http://127.0.0.1:$port/mcp"
@@ -68,7 +71,9 @@ jobs:
               throw "server did not become healthy"
             }
             npm run test:agent
+            npm run test:pro
             npm run test:security
+            npm run test:hardening
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $ws -Recurse -Force -ErrorAction SilentlyContinue
@@ -92,6 +97,7 @@ jobs:
           PORT: "8799"
           DASHBOARD_PORT: "0"
           AGENT_MODE: safe
+          AGENT_POLICY: full
         run: |
           WORKSPACE="$(mktemp -d)"
           AGENT_WORKSPACE="$WORKSPACE" node server.mjs > sec.log 2>&1 &

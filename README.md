@@ -66,8 +66,16 @@ cd local-coding-agent && bash install.sh
   (`git`, `git_status`, `git_diff`), and notes.
 - **Speed-tuned**: compact JSON, relative paths, batch reads, one-call repo map —
   fewer round-trips over the tunnel.
-- **Safety layers**: loopback-only bind, root confinement, `safe`/`full` modes,
-  catastrophic-command blocklist, optional bearer token, audit log.
+- **Pro snapshot**: `workspace_snapshot` gives agents roots, policy, profile,
+  important files, compact tree, git status, test/build/lint commands, health
+  score, and next actions in a single call.
+- **Pro workflow gates**: `workspace_doctor` diagnoses readiness,
+  `quality_gate` runs lint/typecheck/test/build in order, and `session_report`
+  creates a compact handoff report with health, metrics, git state, and
+  recommendations.
+- **Safety layers**: loopback-only bind, root confinement, `safe`/`full` command
+  modes, `strict`/`balanced`/`full` policy enforcement, local approve-once
+  dashboard queue, optional bearer token, browser-origin rejection, and audit log.
 - **v4 cross-platform runtime**: Windows path checks are case-insensitive,
   macOS/Linux use `bash` or `sh` by default, and process-tree cleanup works on
   Windows and POSIX process groups.
@@ -203,9 +211,12 @@ roots**) → **Save settings → Start** (it restarts with the new path). Re-run
 | `AGENT_WORKSPACE` | `../agent-workspace` | Primary root the agent may touch. |
 | `AGENT_EXTRA_ROOTS` | _(empty)_ | Extra roots, `;`-separated. |
 | `AGENT_EXTRA_ROOTS_JSON` | _(empty)_ | Extra roots as JSON string array; safer for cross-platform paths. |
-| `AGENT_MODE` | `safe` | `safe` = conservative blocklist; `full` = unrestricted inside roots. |
+| `AGENT_MODE` | `safe` | Command guardrail. `safe` = conservative blocklist; `full` = fewer app-level command blocks. Not an OS sandbox. |
+| `AGENT_POLICY` | `balanced` | Tool policy. `strict` = read-only; `balanced` = normal edit/test plus local approval for risky actions; `full` = no policy approval gate. |
 | `AGENT_ALLOW_DANGEROUS` | _(unset)_ | `1` allows catastrophic system commands. Leave unset. |
 | `MCP_AUTH_TOKEN` | _(empty)_ | If set, `/mcp` requires `Authorization: Bearer <token>`. |
+| `MCP_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated trusted browser origins for `/mcp`. Empty rejects browser-origin MCP calls. |
+| `AGENT_APPROVAL_TOKEN` | _(empty)_ | Optional secret for MCP-based approval tools. Prefer the local dashboard. |
 | `DASHBOARD_PORT` | `8790` | Local dashboard (`0` disables). Avoid `8788` (the tunnel uses it). |
 
 When `MCP_AUTH_TOKEN` is set, the Windows tray app and both launcher scripts
@@ -214,9 +225,9 @@ ChatGPT connector can still reach the protected local `/mcp` endpoint.
 
 ### Security
 
-See **[SECURITY.md](SECURITY.md)**. In short: it is not a sandbox, prompt
-injection is real, keep `safe` mode unless you know what you're doing, and never
-expose it on a public tunnel without `MCP_AUTH_TOKEN`.
+See **[SECURITY.md](SECURITY.md)**. In short: it is not an OS sandbox, prompt
+injection is real, keep `AGENT_MODE=safe` and `AGENT_POLICY=balanced` for daily
+work, and never expose it on a public tunnel without `MCP_AUTH_TOKEN`.
 
 ### License
 

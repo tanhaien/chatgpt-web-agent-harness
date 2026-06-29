@@ -20,6 +20,7 @@ TUNNEL_BIN="${TUNNEL_BIN:-$REPO_ROOT/tools/tunnel-client}"
 PROFILE_NAME="${PROFILE_NAME:-local-coding-agent}"
 PROFILE_DIR="${PROFILE_DIR:-$REPO_ROOT/tools/profiles}"
 AGENT_MODE="${AGENT_MODE:-safe}"      # "safe" (recommended) or "full"
+AGENT_POLICY="${AGENT_POLICY:-balanced}" # strict, balanced, or full
 EXTRA_ROOTS="${AGENT_EXTRA_ROOTS:-}"  # extra folders, ':' or ';' separated
 AUTH_TOKEN="${MCP_AUTH_TOKEN:-}"      # optional bearer token
 DASHBOARD_PORT="${DASHBOARD_PORT:-8790}"  # do NOT use 8788 (tunnel uses it)
@@ -57,6 +58,7 @@ fi
 if ! curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
   echo "Starting MCP server (workspace=$AGENT_WORKSPACE mode=$AGENT_MODE)..."
   PORT="$PORT" AGENT_HOST=127.0.0.1 AGENT_WORKSPACE="$AGENT_WORKSPACE" AGENT_MODE="$AGENT_MODE" \
+  AGENT_POLICY="$AGENT_POLICY" \
   AGENT_EXTRA_ROOTS="$EXTRA_ROOTS" MCP_AUTH_TOKEN="$AUTH_TOKEN" DASHBOARD_PORT="$DASHBOARD_PORT" \
     nohup node "$SERVER_DIR/server.mjs" >"$SERVER_DIR/mcp.log" 2>"$SERVER_DIR/mcp.err.log" &
   sleep 2

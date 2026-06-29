@@ -28,6 +28,7 @@ public sealed class MainForm : Form
     private TextBox _txtWorkspace = null!;
     private TextBox _txtExtraRoots = null!;
     private ComboBox _cmbMode = null!;
+    private ComboBox _cmbPolicy = null!;
     private NumericUpDown _numPort = null!;
     private TextBox _txtAuth = null!;
     private TextBox _txtKey = null!;
@@ -92,6 +93,12 @@ public sealed class MainForm : Form
         Controls.Add(lblPort);
         _numPort = new NumericUpDown { Left = 345, Top = y - 3, Width = 90, Minimum = 1, Maximum = 65535 };
         Controls.Add(_numPort);
+        y += 34;
+
+        AddLabel("Policy", y);
+        _cmbPolicy = new ComboBox { Left = 150, Top = y - 3, Width = 180, DropDownStyle = ComboBoxStyle.DropDownList };
+        _cmbPolicy.Items.AddRange(new object[] { "strict", "balanced", "full" });
+        Controls.Add(_cmbPolicy);
         y += 34;
 
         _txtAuth = AddRow("Auth token (opt)", ref y);
@@ -213,6 +220,7 @@ public sealed class MainForm : Form
         _txtWorkspace.Text = _cfg.Workspace;
         _txtExtraRoots.Text = _cfg.ExtraRoots;
         _cmbMode.SelectedItem = _cfg.Mode == "safe" ? "safe" : "full";
+        _cmbPolicy.SelectedItem = _cfg.Policy is "strict" or "full" ? _cfg.Policy : "balanced";
         _numPort.Value = Math.Clamp(_cfg.Port, 1, 65535);
         _txtAuth.Text = _cfg.AuthToken;
         _chkOpenWeb.Checked = _cfg.OpenWebUi;
@@ -229,6 +237,7 @@ public sealed class MainForm : Form
         _cfg.Workspace = _txtWorkspace.Text.Trim();
         _cfg.ExtraRoots = _txtExtraRoots.Text.Trim();
         _cfg.Mode = (_cmbMode.SelectedItem as string) ?? "full";
+        _cfg.Policy = (_cmbPolicy.SelectedItem as string) ?? "balanced";
         _cfg.Port = (int)_numPort.Value;
         _cfg.AuthToken = _txtAuth.Text.Trim();
         _cfg.OpenWebUi = _chkOpenWeb.Checked;

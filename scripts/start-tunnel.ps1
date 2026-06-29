@@ -26,6 +26,7 @@ $TunnelExe      = Join-Path $RepoRoot "tools\tunnel-client.exe"
 $ProfileName    = "local-coding-agent"
 $ProfileDir     = Join-Path $RepoRoot "tools\profiles"
 $AgentMode      = "safe"     # "safe" (recommended) or "full"
+$AgentPolicy    = "balanced" # "strict", "balanced", or "full"
 $ExtraRoots     = ""          # extra folders, semicolon-separated
 $AuthToken      = ""          # optional bearer token (defense in depth)
 $DashboardPort  = "8790"      # local-only dashboard; do NOT use 8788 (tunnel uses it)
@@ -77,6 +78,7 @@ if (-not $health) {
     $env:PORT = $Port
     $env:AGENT_WORKSPACE = $AgentWorkspace
     $env:AGENT_MODE = $AgentMode
+    $env:AGENT_POLICY = $AgentPolicy
     $env:AGENT_EXTRA_ROOTS = $ExtraRoots
     $env:MCP_AUTH_TOKEN = $AuthToken
     $env:DASHBOARD_PORT = $DashboardPort

@@ -25,6 +25,16 @@ on that machine. Read this before using it.
 ## Safe defaults
 
 - `AGENT_MODE=safe` by default (destructive commands and absolute paths blocked).
+- `AGENT_POLICY=balanced` by default. Normal edits/tests can proceed, while
+  deletes, installs/network calls, mutating git, risky commands, risky
+  background processes, and destructive patch operations require one-time local
+  approval in the dashboard.
+- Browser-origin `/mcp` requests are rejected unless explicitly listed in
+  `MCP_ALLOWED_ORIGINS`.
+- Bearer tokens are accepted only through `Authorization: Bearer <token>`, not
+  query strings.
+- Notes, checkpoints, patch history, backups, and approval records are isolated
+  per workspace.
 - Catastrophic system commands (disk format, diskpart, shutdown, registry wipes,
   fork bombs) stay blocked even in `full` mode unless `AGENT_ALLOW_DANGEROUS=1`.
 - Server listens on loopback only.
