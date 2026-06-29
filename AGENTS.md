@@ -14,7 +14,7 @@ as a coding agent on the user's machine, plus an optional **Windows tray app**
 - **The OpenAI tunnel client is NOT in this repo** (proprietary). The user must
   obtain it and place it at `tools/tunnel-client.exe` (Windows) or
   `tools/tunnel-client` (macOS/Linux). Never download/commit it.
-- (Windows tray app only) **.NET 8+ SDK** — `dotnet --version`.
+- (Windows tray app only) **.NET 10 SDK** — `dotnet --version`.
 - Optional: **ripgrep** (`rg`) makes search faster; the server auto-detects it.
 
 ## Install (one command)
@@ -43,7 +43,8 @@ This runs `npm install` in `server/` and creates `tools/`. It does NOT need sudo
 
 ## Key config (env vars, see server/README.md)
 `AGENT_WORKSPACE` (root folder), `AGENT_MODE` = `safe`|`full`, `AGENT_EXTRA_ROOTS`
-(`;`-sep), `MCP_AUTH_TOKEN`, `DASHBOARD_PORT` (default 8790), `PORT` (8787).
+(`;`-sep), `AGENT_EXTRA_ROOTS_JSON` (preferred for paths with separators),
+`MCP_AUTH_TOKEN`, `DASHBOARD_PORT` (default 8790), `PORT` (8787).
 
 ## Gotchas (read before debugging)
 - **Default to `AGENT_MODE=safe`.** `full` lets `run_command` do almost anything

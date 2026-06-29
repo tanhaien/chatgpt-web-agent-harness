@@ -74,4 +74,12 @@ echo
 cleanup() { unset CP_KEY; }
 trap cleanup EXIT
 echo "Running tunnel. Keep this terminal open while using the ChatGPT app."
-CONTROL_PLANE_API_KEY="$CP_KEY" "$TUNNEL_BIN" run --profile "$PROFILE_NAME" --profile-dir "$PROFILE_DIR" --open-web-ui
+if [ -n "$AUTH_TOKEN" ]; then
+  CONTROL_PLANE_API_KEY="$CP_KEY" \
+  MCP_AUTH_HEADER="Bearer $AUTH_TOKEN" \
+  MCP_EXTRA_HEADERS="Authorization: env:MCP_AUTH_HEADER" \
+    "$TUNNEL_BIN" run --profile "$PROFILE_NAME" --profile-dir "$PROFILE_DIR" --open-web-ui
+else
+  CONTROL_PLANE_API_KEY="$CP_KEY" \
+    "$TUNNEL_BIN" run --profile "$PROFILE_NAME" --profile-dir "$PROFILE_DIR" --open-web-ui
+fi

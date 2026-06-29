@@ -19,7 +19,7 @@ public class AppConfig
     public string TunnelProfileDir { get; set; } = "";
     public string Workspace { get; set; } = "";
     public string ExtraRoots { get; set; } = "";
-    public string Mode { get; set; } = "full";
+    public string Mode { get; set; } = "safe";
     public int Port { get; set; } = 8787;
     public int DashboardPort { get; set; } = 8790;
     public string AuthToken { get; set; } = "";
@@ -75,7 +75,7 @@ public class AppConfig
         if (DashboardPort <= 0) DashboardPort = 8790;
         // 8788 collides with the OpenAI tunnel-client's own health port; migrate off it.
         if (DashboardPort == 8788) DashboardPort = 8790;
-        if (string.IsNullOrWhiteSpace(Mode)) Mode = "full";
+        if (string.IsNullOrWhiteSpace(Mode)) Mode = "safe";
         if (string.IsNullOrWhiteSpace(ServerScript)) ServerScript = "server.mjs";
         if (string.IsNullOrWhiteSpace(NodePath)) NodePath = "node";
         if (string.IsNullOrWhiteSpace(TunnelProfileName)) TunnelProfileName = "local-coding-agent";

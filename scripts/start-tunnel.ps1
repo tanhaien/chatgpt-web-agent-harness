@@ -102,9 +102,15 @@ $plainKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
 
 try {
     $env:CONTROL_PLANE_API_KEY = $plainKey
+    if ($AuthToken) {
+        $env:MCP_AUTH_HEADER = "Bearer $AuthToken"
+        $env:MCP_EXTRA_HEADERS = "Authorization: env:MCP_AUTH_HEADER"
+    }
     Write-Host ""
     Write-Host "Running tunnel. Keep this window open while using the ChatGPT app."
     & $TunnelExe run --profile $ProfileName --profile-dir $ProfileDir --open-web-ui
 } finally {
     Remove-Item Env:\CONTROL_PLANE_API_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:\MCP_AUTH_HEADER -ErrorAction SilentlyContinue
+    Remove-Item Env:\MCP_EXTRA_HEADERS -ErrorAction SilentlyContinue
 }

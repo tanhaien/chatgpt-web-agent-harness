@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import http from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   mkdir,
   readFile,
@@ -15,7 +15,7 @@ import {
   appendFile,
   access
 } from "node:fs/promises";
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID, timingSafeEqual } from "node:crypto";
@@ -27,7 +27,7 @@ import { z } from "zod";
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
 // ----------------------------------------------------------------------------
-const VERSION = "1.6.0";
+const VERSION = "4.0.0";
 const PORT = Number(process.env.PORT || 8787);
 // Bind to loopback by default. The local OpenAI tunnel-client forwards to this,
 // so we never need to listen on 0.0.0.0 (which would expose a shell to the LAN).
@@ -44,11 +44,7 @@ const DASHBOARD_HOST = process.env.DASHBOARD_HOST || "127.0.0.1";
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WORKSPACE = path.resolve(APP_DIR, "..", "agent-workspace");
 const PRIMARY_ROOT = path.resolve(process.env.AGENT_WORKSPACE || DEFAULT_WORKSPACE);
-const EXTRA_ROOTS = (process.env.AGENT_EXTRA_ROOTS || "")
-  .split(";")
-  .map((s) => s.trim())
-  .filter(Boolean)
-  .map((p) => path.resolve(p));
+const EXTRA_ROOTS = parseExtraRoots();
 const ROOTS = dedupe([PRIMARY_ROOT, ...EXTRA_ROOTS]);
 
 // "safe" (default): file/command tools are confined to roots, destructive
@@ -153,7 +149,7 @@ const bootStartedAt = Date.now();
 await mkdir(DATA_DIR, { recursive: true });
 await mkdir(PRIMARY_ROOT, { recursive: true });
 
-const metrics = loadMetrics();
+let metrics = loadMetrics();
 
 // Detect ripgrep once at startup — the fastest search engine when present.
 const RG_BIN = await detectRg();
@@ -237,6 +233,11 @@ if (DASHBOARD_PORT > 0) {
       const url = new URL(req.url || "/", `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`);
       if (url.pathname === "/metrics") return sendJson(res, 200, metricsSnapshot());
       if (url.pathname === "/ui") return sendHtml(res, dashboardHtml());
+      // Mini-IDE JSON APIs (local-only, read-only except clear-metrics).
+      if (url.pathname === "/api/tree") return void dashApiTree(url, res);
+      if (url.pathname === "/api/file") return void dashApiFile(url, res);
+      if (url.pathname === "/api/diff") return void dashApiDiff(url, res);
+      if (url.pathname === "/api/clear-metrics" && req.method === "POST") return void dashApiClearMetrics(res);
       if (url.pathname === "/") {
         res.writeHead(302, { Location: "/ui" });
         return res.end();
@@ -387,6 +388,97 @@ function registerSkillTools(mcp) {
       return jsonResult({ name: skill.name, dir: skill.dir, files, content: body.slice(0, MAX_READ_CHARS) });
     }
   );
+
+  reg(
+    mcp,
+    "create_skill",
+    {
+      title: "Create skill",
+      description: "Author a reusable skill: writes <skillsdir>/<name>/SKILL.md with YAML frontmatter (name, description) plus your body. Default skillsdir is <PRIMARY_ROOT>/.claude/skills. After this, list_skills will show it.",
+      inputSchema: {
+        name: z.string().min(1).describe("Skill name (folder + frontmatter name), e.g. \"deploy-web\"."),
+        description: z.string().min(1).describe("One-line description shown by list_skills."),
+        body: z.string().describe("Markdown body of the skill (instructions). Written below the frontmatter."),
+        dir: z.string().optional().describe("Skills directory to write into (must be inside a root). Default <PRIMARY_ROOT>/.claude/skills.")
+      }
+    },
+    async ({ name, description, body, dir }) => {
+      const folderName = sanitizeSkillName(name);
+      if (!folderName) throw new Error("Invalid skill name. Use letters, digits, dot, dash or underscore.");
+      const skillsDir = resolvePath(dir || defaultSkillsDir());
+      const skillFolder = path.join(skillsDir, folderName);
+      // Keep writes within a recognised skills dir (defense in depth).
+      if (!isWithinSkillsDir(skillFolder)) {
+        throw new Error("Refusing to write outside a skills directory.");
+      }
+      const skillFile = path.join(skillFolder, "SKILL.md");
+      const frontName = String(name).replace(/"/g, '\\"');
+      const frontDesc = String(description).replace(/\r?\n/g, " ").replace(/"/g, '\\"');
+      const content = `---\nname: "${frontName}"\ndescription: "${frontDesc}"\n---\n\n${body || ""}${body && !body.endsWith("\n") ? "\n" : ""}`;
+      await mkdir(skillFolder, { recursive: true });
+      await writeFile(skillFile, content, "utf8");
+      return jsonResult({ ok: true, name: folderName, dir: skillFolder, skill_file: skillFile });
+    }
+  );
+
+  reg(
+    mcp,
+    "delete_skill",
+    {
+      title: "Delete skill",
+      description: "Delete a skill folder (the directory holding its SKILL.md). Only removes folders located inside a skills directory.",
+      inputSchema: {
+        name: z.string().min(1).describe("Skill name from list_skills."),
+        dir: z.string().optional().describe("Skills directory to look in (must be inside a root). Default <PRIMARY_ROOT>/.claude/skills.")
+      }
+    },
+    async ({ name, dir }) => {
+      const skills = await discoverSkills();
+      let target = null;
+      const hit = skills.find((s) => s.name.toLowerCase() === String(name).toLowerCase());
+      if (hit) {
+        target = hit.dir;
+      } else {
+        const folderName = sanitizeSkillName(name);
+        if (folderName) target = path.join(resolvePath(dir || defaultSkillsDir()), folderName);
+      }
+      if (!target) throw new Error(`No skill named "${name}".`);
+      const resolved = resolvePath(target);
+      if (!isWithinSkillsDir(resolved)) {
+        throw new Error("Refusing to delete a folder that is not inside a skills directory.");
+      }
+      if (!existsSync(resolved)) throw new Error(`No skill folder at ${resolved}.`);
+      await rm(resolved, { recursive: true, force: true });
+      return jsonResult({ ok: true, deleted: resolved });
+    }
+  );
+}
+
+// First workspace skills dir for authoring: <PRIMARY_ROOT>/.claude/skills.
+function defaultSkillsDir() {
+  return path.join(PRIMARY_ROOT, ".claude", "skills");
+}
+
+// Skill folder names: keep them simple path segments (no separators / traversal).
+function sanitizeSkillName(name) {
+  const s = String(name || "").trim();
+  if (!s || s === "." || s === "..") return "";
+  if (/[\\/]/.test(s) || !/^[\w.-]+$/.test(s)) return "";
+  return s;
+}
+
+// A path is "inside a skills directory" if any segment of its parent chain is a
+// known skills dir (from SKILLS_DIRS) or matches the .claude/skills | .agent/skills
+// convention under a root. Used to confine create/delete to skills areas.
+function isWithinSkillsDir(p) {
+  const parent = path.dirname(p);
+  const candidates = new Set(SKILLS_DIRS.map((d) => path.resolve(d)));
+  candidates.add(path.resolve(defaultSkillsDir()));
+  for (const root of ROOTS) {
+    candidates.add(path.resolve(path.join(root, ".claude", "skills")));
+    candidates.add(path.resolve(path.join(root, ".agent", "skills")));
+  }
+  return candidates.has(path.resolve(parent));
 }
 
 // ----------------------------------------------------------------------------
@@ -1074,7 +1166,7 @@ function registerExecTools(mcp) {
       inputSchema: {
         command: z.string().min(1),
         cwd: z.string().optional().describe("Working directory inside a root."),
-        shell: z.enum(["cmd", "powershell", "bash"]).optional().describe("Shell to use (default cmd on Windows)."),
+        shell: z.enum(["cmd", "powershell", "bash", "sh", "zsh"]).optional().describe("Shell to use (default cmd on Windows, bash/sh on macOS/Linux)."),
         timeout_ms: z.number().int().min(1000).max(600000).optional(),
         tail_lines: z.number().int().min(1).max(5000).optional().describe("Return only the last N lines of output."),
         head_lines: z.number().int().min(1).max(5000).optional().describe("Return only the first N lines of output."),
@@ -1113,7 +1205,7 @@ function registerProcessTools(mcp) {
       inputSchema: {
         command: z.string().min(1),
         cwd: z.string().optional(),
-        shell: z.enum(["cmd", "powershell", "bash"]).optional(),
+        shell: z.enum(["cmd", "powershell", "bash", "sh", "zsh"]).optional(),
         name: z.string().optional()
       }
     },
@@ -1188,6 +1280,22 @@ function registerProcessTools(mcp) {
   );
 }
 
+// Git flags blocked on the raw `git` tool (any mode): they can write arbitrary
+// files, run external programs, or operate outside the resolved repo.
+const BAD_GIT_FLAGS = [
+  /^-c$/, /^-C$/,
+  /^--git-dir(=|$)/i, /^--work-tree(=|$)/i,
+  /^--output(=|$)/i, /^--no-index$/i, /^--ext-diff$/i,
+  /^--exec-path(=|$)/i, /^--upload-pack(=|$)/i, /^--receive-pack(=|$)/i
+];
+
+// Read-only git subcommands allowed in safe mode (mutating ones need full mode).
+const GIT_READONLY = new Set([
+  "status", "diff", "log", "show", "ls-files", "ls-tree", "rev-parse", "blame",
+  "grep", "cat-file", "describe", "shortlog", "reflog", "whatchanged", "name-rev",
+  "merge-base", "symbolic-ref", "for-each-ref", "count-objects", "version", "help"
+]);
+
 function registerGitTool(mcp) {
   reg(
     mcp,
@@ -1201,10 +1309,22 @@ function registerGitTool(mcp) {
       }
     },
     async ({ args, cwd = "." }) => {
+      // Always block flags that can write files, run external programs, or escape
+      // the repo — even on "read" subcommands (e.g. `git diff --output=../x`,
+      // `-c core.pager=...`, `--ext-diff`, `--git-dir`/`--work-tree`).
+      if (args.some((a) => BAD_GIT_FLAGS.some((re) => re.test(a)))) {
+        throw new Error("That git flag is blocked (can write files, run external programs, or escape the repo).");
+      }
       if (MODE !== "full") {
-        const danger = args.join(" ").toLowerCase();
-        if (/(^|\s)(clean)(\s|$)/.test(danger) || /reset\s+--hard/.test(danger)) {
-          throw new Error("Destructive git command blocked in safe mode.");
+        // safe mode: only allow read-only git subcommands. Mutations
+        // (restore, checkout --, rm, branch -D, push --force, reset, clean, …)
+        // require AGENT_MODE=full.
+        const sub = (args.find((a) => !a.startsWith("-")) || "").toLowerCase();
+        const infoFlag = args.some((a) => /^(--version|--help)$/i.test(a) || /^-[vh]$/.test(a));
+        if (!infoFlag && !GIT_READONLY.has(sub)) {
+          throw new Error(
+            `Git "${sub || args[0] || ""}" is blocked in safe mode (only read-only git is allowed). Use git_status/git_diff, or set AGENT_MODE=full.`
+          );
         }
       }
       const workdir = resolvePath(cwd);
@@ -1212,22 +1332,163 @@ function registerGitTool(mcp) {
       return jsonResult({ cwd: workdir, args, ...result });
     }
   );
+
+  reg(
+    mcp,
+    "git_status",
+    {
+      title: "Git status",
+      description: "Parsed working-tree status (git status --porcelain) for a repo inside a root. Returns a structured list of changed files with their index/worktree codes.",
+      inputSchema: {
+        cwd: z.string().optional().describe("Repository directory inside a root (default the primary root).")
+      }
+    },
+    async ({ cwd = "." }) => {
+      const workdir = resolvePath(cwd);
+      const result = await spawnCapture("git", ["status", "--porcelain"], workdir, DEFAULT_CMD_TIMEOUT);
+      if (result.exit_code !== 0) {
+        // Not a git repo (or git error) — don't pretend it's "clean".
+        return jsonResult({
+          cwd: workdir,
+          is_git_repo: false,
+          clean: null,
+          error: (result.stderr || "git error").split(/\r?\n/)[0]
+        });
+      }
+      const branchRes = await spawnCapture("git", ["rev-parse", "--abbrev-ref", "HEAD"], workdir, DEFAULT_CMD_TIMEOUT);
+      const files = parsePorcelain(result.stdout || "");
+      return jsonResult({
+        cwd: workdir,
+        is_git_repo: true,
+        branch: (branchRes.stdout || "").trim() || null,
+        clean: files.length === 0,
+        count: files.length,
+        files
+      });
+    }
+  );
+
+  reg(
+    mcp,
+    "git_diff",
+    {
+      title: "Git diff",
+      description: "Show a git diff for a repo inside a root. Optionally limit to a path; pass staged:true to diff the index against HEAD.",
+      inputSchema: {
+        path: z.string().optional().describe("Limit the diff to this file or directory."),
+        staged: z.boolean().optional().describe("Diff staged changes (--staged) instead of the working tree."),
+        cwd: z.string().optional().describe("Repository directory inside a root (default the primary root).")
+      }
+    },
+    async ({ path: rel, staged = false, cwd = "." }) => {
+      const workdir = resolvePath(cwd);
+      const args = ["diff"];
+      if (staged) args.push("--staged");
+      if (rel) {
+        // Confine the diff path to a root as well.
+        const target = resolvePath(rel);
+        args.push("--", target);
+      }
+      const result = await spawnCapture("git", args, workdir, DEFAULT_CMD_TIMEOUT);
+      if (result.exit_code !== 0) {
+        return jsonResult({
+          cwd: workdir,
+          is_git_repo: false,
+          error: (result.stderr || "git error").split(/\r?\n/)[0]
+        });
+      }
+      return jsonResult({
+        cwd: workdir,
+        is_git_repo: true,
+        staged,
+        path: rel || null,
+        diff: result.stdout || "",
+        empty: !(result.stdout || "").trim()
+      });
+    }
+  );
+}
+
+// Parse `git status --porcelain` into structured entries. Each line is
+// "XY <path>" (or "XY <old> -> <new>" for renames) where X is the index code
+// and Y the worktree code.
+function parsePorcelain(out) {
+  const files = [];
+  for (const line of out.split(/\r?\n/)) {
+    if (!line) continue;
+    const index = line[0];
+    const worktree = line[1];
+    let rest = line.slice(3);
+    let from = null;
+    let to = rest;
+    const arrow = rest.indexOf(" -> ");
+    if (arrow !== -1) {
+      from = rest.slice(0, arrow);
+      to = rest.slice(arrow + 4);
+    }
+    files.push({
+      index: index === " " ? null : index,
+      worktree: worktree === " " ? null : worktree,
+      path: to,
+      from,
+      staged: index !== " " && index !== "?",
+      untracked: index === "?" && worktree === "?"
+    });
+  }
+  return files;
 }
 
 // ----------------------------------------------------------------------------
 // Path safety
 // ----------------------------------------------------------------------------
+// Canonical (symlink/junction-resolved) form of the roots, computed once.
+const REAL_ROOTS = ROOTS.map((r) => {
+  try {
+    return realpathSync(r);
+  } catch {
+    return r;
+  }
+});
+
+// Resolve the longest existing ancestor with realpath, then re-append the
+// not-yet-existing tail. This canonicalizes symlinks/junctions even for files
+// that don't exist yet (e.g. write_file targets).
+function canonicalize(p) {
+  let cur = path.resolve(p);
+  const tail = [];
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = realpathSync(cur);
+      return tail.length ? path.join(real, ...tail) : real;
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return path.resolve(p);
+      tail.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+  return path.resolve(p);
+}
+
 function resolvePath(input = ".") {
   const raw = String(input ?? ".").trim();
   const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(PRIMARY_ROOT, raw);
   if (!isWithinRoots(resolved)) throw new Error(`Path is outside the allowed roots: ${input}`);
+  // Symlink/junction hardening: the REAL target must also be inside a root, so a
+  // link planted in the workspace can't redirect file tools outside it.
+  const canon = canonicalize(resolved);
+  if (canon !== resolved && !isWithinRoots(canon, REAL_ROOTS)) {
+    throw new Error(`Path resolves outside the allowed roots via a link: ${input}`);
+  }
   return resolved;
 }
 
-function isWithinRoots(p) {
-  return ROOTS.some((root) => {
-    const withSep = root.endsWith(path.sep) ? root : root + path.sep;
-    return p === root || p.startsWith(withSep);
+function isWithinRoots(p, roots = ROOTS) {
+  return roots.some((root) => {
+    const target = comparePath(p);
+    const base = comparePath(root);
+    const withSep = base.endsWith(path.sep) ? base : base + path.sep;
+    return target === base || target.startsWith(withSep);
   });
 }
 
@@ -1235,9 +1496,9 @@ function isWithinRoots(p) {
 // file lives under it, otherwise the absolute path. Round-trips back through
 // resolvePath() because relative inputs resolve against the primary root.
 function toRel(abs) {
-  if (abs === PRIMARY_ROOT) return ".";
+  if (comparePath(abs) === comparePath(PRIMARY_ROOT)) return ".";
   const withSep = PRIMARY_ROOT.endsWith(path.sep) ? PRIMARY_ROOT : PRIMARY_ROOT + path.sep;
-  if (abs.startsWith(withSep)) return abs.slice(withSep.length).split(path.sep).join("/");
+  if (comparePath(abs).startsWith(comparePath(withSep))) return abs.slice(withSep.length).split(path.sep).join("/");
   return abs;
 }
 
@@ -1509,19 +1770,52 @@ function assertCommandAllowed(command) {
 }
 
 function defaultShell() {
-  return process.platform === "win32" ? "cmd" : "bash";
+  if (process.platform === "win32") return "cmd";
+  return hasCommand("bash") ? "bash" : "sh";
 }
 
 function buildSpawn(command, shell) {
   const s = shell || defaultShell();
   if (s === "powershell") {
-    return { file: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", command], opts: {} };
+    const file = process.platform === "win32" ? "powershell.exe" : hasCommand("pwsh") ? "pwsh" : "powershell";
+    return { file, args: ["-NoProfile", "-NonInteractive", "-Command", command], opts: {} };
   }
   if (s === "bash") {
     return { file: "bash", args: ["-lc", command], opts: {} };
   }
+  if (s === "sh") {
+    return { file: "sh", args: ["-c", command], opts: {} };
+  }
+  if (s === "zsh") {
+    return { file: "zsh", args: ["-lc", command], opts: {} };
+  }
   // cmd / default: rely on the OS shell so pipes/redirects work.
   return { file: command, args: [], opts: { shell: true } };
+}
+
+function spawnOptions(cwd, opts = {}, env) {
+  return {
+    cwd,
+    windowsHide: true,
+    detached: process.platform !== "win32",
+    ...(env ? { env } : {}),
+    ...opts
+  };
+}
+
+function terminateChildTree(child, signal = "SIGTERM") {
+  if (!child?.pid) return;
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+    } else {
+      process.kill(-child.pid, signal);
+    }
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {}
+  }
 }
 
 function runShellCommand(command, cwd, shell, timeoutMs) {
@@ -1532,16 +1826,14 @@ function runShellCommand(command, cwd, shell, timeoutMs) {
     let timedOut = false;
     let child;
     try {
-      child = spawn(file, args, { cwd, windowsHide: true, env: { ...process.env, AGENT_WORKSPACE: PRIMARY_ROOT }, ...opts });
+      child = spawn(file, args, spawnOptions(cwd, opts, { ...process.env, AGENT_WORKSPACE: PRIMARY_ROOT }));
     } catch (err) {
       resolve({ exit_code: null, timed_out: false, stdout: "", stderr: String(err?.message || err) });
       return;
     }
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill("SIGTERM");
-      } catch {}
+      terminateChildTree(child, "SIGTERM");
     }, timeoutMs);
     child.stdout?.on("data", (c) => (stdout = appendLimited(stdout, c.toString(), MAX_COMMAND_OUTPUT)));
     child.stderr?.on("data", (c) => (stderr = appendLimited(stderr, c.toString(), MAX_COMMAND_OUTPUT)));
@@ -1563,16 +1855,14 @@ function spawnCapture(file, args, cwd, timeoutMs) {
     let timedOut = false;
     let child;
     try {
-      child = spawn(file, args, { cwd, windowsHide: true });
+      child = spawn(file, args, spawnOptions(cwd));
     } catch (err) {
       resolve({ exit_code: null, timed_out: false, stdout: "", stderr: String(err?.message || err) });
       return;
     }
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill("SIGTERM");
-      } catch {}
+      terminateChildTree(child, "SIGTERM");
     }, timeoutMs);
     child.stdout?.on("data", (c) => (stdout = appendLimited(stdout, c.toString(), MAX_COMMAND_OUTPUT)));
     child.stderr?.on("data", (c) => (stderr = appendLimited(stderr, c.toString(), MAX_COMMAND_OUTPUT)));
@@ -1589,7 +1879,7 @@ function spawnCapture(file, args, cwd, timeoutMs) {
 
 function startBackground(command, cwd, shell, name) {
   const { file, args, opts } = buildSpawn(command, shell);
-  const child = spawn(file, args, { cwd, windowsHide: true, env: { ...process.env, AGENT_WORKSPACE: PRIMARY_ROOT }, ...opts });
+  const child = spawn(file, args, spawnOptions(cwd, opts, { ...process.env, AGENT_WORKSPACE: PRIMARY_ROOT }));
   const proc = {
     id: randomUUID(),
     name: name || command.slice(0, 40),
@@ -1622,11 +1912,7 @@ function killProcessTree(proc) {
   }
   const pid = proc.child.pid;
   try {
-    if (process.platform === "win32" && pid) {
-      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
-    } else {
-      proc.child.kill("SIGTERM");
-    }
+    if (pid) terminateChildTree(proc.child, "SIGTERM");
   } catch {}
   proc.status = "stopped";
 }
@@ -1848,6 +2134,36 @@ function dedupe(arr) {
   return [...new Set(arr)];
 }
 
+function parseExtraRoots() {
+  const json = process.env.AGENT_EXTRA_ROOTS_JSON;
+  if (json && json.trim()) {
+    try {
+      const parsed = JSON.parse(json);
+      if (!Array.isArray(parsed) || parsed.some((p) => typeof p !== "string")) {
+        throw new Error("AGENT_EXTRA_ROOTS_JSON must be a JSON string array.");
+      }
+      return parsed.map((p) => path.resolve(p));
+    } catch (err) {
+      console.warn(`Invalid AGENT_EXTRA_ROOTS_JSON ignored: ${err?.message || err}`);
+    }
+  }
+  return (process.env.AGENT_EXTRA_ROOTS || "")
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((p) => path.resolve(p));
+}
+
+function hasCommand(command) {
+  const result = spawnSync(command, ["--version"], { stdio: "ignore", windowsHide: true });
+  return !result.error;
+}
+
+function comparePath(p) {
+  const resolved = path.resolve(p);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
 function isoNow() {
   return new Date().toISOString();
 }
@@ -1871,14 +2187,33 @@ function trimOutput(s, { tail_lines, head_lines, max_chars }) {
   return s.length > max_chars ? s.slice(0, max_chars) : s;
 }
 
+// Fields whose values may carry secrets or large payloads — redact them in the
+// audit log so data/audit.log never stores tokens/keys/file contents/commands.
+const AUDIT_REDACT = /^(content|body|diff|patch|old_text|new_text|command|token|key|secret|password|authorization|auth|api[_-]?key)$/i;
+
+// Recursively redact sensitive keys at ANY depth (e.g. apply_patch.operations[].content,
+// .edits[].new_text) and truncate long strings, so data/audit.log never stores secrets.
+function redactDeep(v, depth = 0) {
+  if (depth > 8) return "…";
+  if (Array.isArray(v)) return v.slice(0, 50).map((x) => redactDeep(x, depth + 1));
+  if (v && typeof v === "object") {
+    const o = {};
+    for (const [k, val] of Object.entries(v)) {
+      if (AUDIT_REDACT.test(k)) {
+        o[k] = typeof val === "string" ? `[redacted ${val.length} chars]` : "[redacted]";
+      } else {
+        o[k] = redactDeep(val, depth + 1);
+      }
+    }
+    return o;
+  }
+  if (typeof v === "string" && v.length > 200) return `${v.slice(0, 200)}…(${v.length} chars)`;
+  return v;
+}
+
 function summarizeArgs(args) {
   try {
-    const clone = {};
-    for (const [k, v] of Object.entries(args || {})) {
-      if (typeof v === "string" && v.length > 200) clone[k] = `${v.slice(0, 200)}…(${v.length} chars)`;
-      else clone[k] = v;
-    }
-    const s = JSON.stringify(clone);
+    const s = JSON.stringify(redactDeep(args || {}));
     return s.length > 800 ? `${s.slice(0, 800)}…` : s;
   } catch {
     return "<unserializable>";
@@ -1946,12 +2281,101 @@ function homeHtml() {
     <div class="panel"><p><strong>Roots</strong></p>${ROOTS.map((r) => `<p><code>${escapeHtml(r)}</code></p>`).join("")}</div>
     <div class="panel"><p><strong>MCP endpoint</strong></p><p><code>http://${HOST}:${PORT}/mcp</code></p></div>
     <div class="panel"><p><strong>Tools</strong></p>
-      <p><code>workspace_info, repo_overview, list_files, find_files, read_file, read_many, stat_path, search_text, write_file, replace_in_file, apply_patch, make_dir, move_path, delete_path, run_command, proc_start, proc_list, proc_output, proc_stop, git, list_skills, read_skill, ping, save_note, list_notes, checkpoint, resume</code></p>
+      <p><code>workspace_info, repo_overview, list_files, find_files, read_file, read_many, stat_path, search_text, write_file, replace_in_file, apply_patch, make_dir, move_path, delete_path, run_command, proc_start, proc_list, proc_output, proc_stop, git, git_status, git_diff, list_skills, read_skill, create_skill, delete_skill, ping, save_note, list_notes, checkpoint, resume</code></p>
     </div>
     <div class="panel"><p><strong>Local dashboard</strong> (this machine only): <code>http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/ui</code></p></div>
   </main>
 </body>
 </html>`;
+}
+
+// ----------------------------------------------------------------------------
+// Mini-IDE dashboard APIs (local-only). Read-only file/tree/diff + clear-metrics.
+// Reuse the same root confinement (resolvePath) and SKIP_DIRS as the MCP tools.
+// ----------------------------------------------------------------------------
+async function dashApiTree(url, res) {
+  try {
+    const rel = url.searchParams.get("path") || ".";
+    const start = resolvePath(rel);
+    const depth = Math.min(Math.max(Number(url.searchParams.get("depth") || 4), 1), 8);
+    const maxEntries = Math.min(Math.max(Number(url.searchParams.get("max") || 2000), 10), 6000);
+    const { tree } = await buildTree(start, depth, maxEntries);
+    const entries = tree.map((abs) => {
+      const isDir = abs.endsWith(path.sep);
+      const clean = isDir ? abs.slice(0, -1) : abs;
+      return { path: toRel(clean), type: isDir ? "directory" : "file" };
+    });
+    return sendJson(res, 200, {
+      root: toRel(start),
+      truncated: tree.length >= maxEntries,
+      count: entries.length,
+      entries
+    });
+  } catch (error) {
+    return sendJson(res, 400, { error: error?.message || "error" });
+  }
+}
+
+async function dashApiFile(url, res) {
+  try {
+    const rel = url.searchParams.get("path");
+    if (!rel) return sendJson(res, 400, { error: "path is required" });
+    const filePath = resolvePath(rel);
+    const info = await stat(filePath);
+    if (info.isDirectory()) return sendJson(res, 400, { error: "path is a directory" });
+    const raw = await readFile(filePath, "utf8");
+    const total_lines = raw.split(/\r?\n/).length;
+    const cap = MAX_READ_CHARS;
+    const truncated = raw.length > cap;
+    return sendJson(res, 200, {
+      path: toRel(filePath),
+      total_lines,
+      chars: raw.length,
+      truncated,
+      content: truncated ? raw.slice(0, cap) : raw
+    });
+  } catch (error) {
+    return sendJson(res, 400, { error: error?.message || "error" });
+  }
+}
+
+async function dashApiDiff(url, res) {
+  try {
+    const rel = url.searchParams.get("path");
+    const args = ["diff"];
+    if (rel) {
+      const target = resolvePath(rel);
+      args.push("--", target);
+    }
+    const result = await spawnCapture("git", args, PRIMARY_ROOT, DEFAULT_CMD_TIMEOUT);
+    if (result.exit_code !== 0) {
+      return sendJson(res, 200, {
+        root: toRel(PRIMARY_ROOT),
+        is_git_repo: false,
+        diff: "",
+        empty: true,
+        error: (result.stderr || "not a git repository").split(/\r?\n/)[0]
+      });
+    }
+    return sendJson(res, 200, {
+      root: toRel(PRIMARY_ROOT),
+      is_git_repo: true,
+      diff: result.stdout || "",
+      empty: !(result.stdout || "").trim()
+    });
+  } catch (error) {
+    return sendJson(res, 400, { error: error?.message || "error" });
+  }
+}
+
+function dashApiClearMetrics(res) {
+  try {
+    metrics = emptyMetrics();
+    saveMetricsSync();
+    return sendJson(res, 200, { ok: true, cleared: true });
+  } catch (error) {
+    return sendJson(res, 500, { error: error?.message || "error" });
+  }
 }
 
 function dashboardHtml() {
@@ -1988,13 +2412,27 @@ function dashboardHtml() {
   .pill { display:inline-block; font-size:12px; padding:2px 9px; border-radius:999px; background:#1e293b; color:#93c5fd; margin-left:6px; }
   #status { float:right; font-size:13px; color:#2dd4bf; }
   .note { color:#6b7790; font-size:12px; margin-top:6px; }
+  .btn { display:inline-block; cursor:pointer; font-size:12px; padding:4px 11px; border-radius:7px; background:#1e293b; color:#93c5fd; border:1px solid #2a3a55; }
+  .btn:hover { background:#243349; }
+  .btn.active { background:#0f766e; color:#d7fff7; border-color:#0f766e; }
+  .ide { display:grid; grid-template-columns:300px 1fr; gap:0; border:1px solid #1f2a3d; border-radius:10px; overflow:hidden; min-height:360px; }
+  @media (max-width:820px){ .ide { grid-template-columns:1fr; } }
+  .ide-tree { background:#0c1018; border-right:1px solid #1f2a3d; max-height:520px; overflow:auto; padding:8px 0; }
+  .ide-view { background:#10141d; max-height:520px; overflow:auto; }
+  .tnode { font-family:Consolas,monospace; font-size:12.5px; padding:3px 10px 3px 0; cursor:pointer; white-space:nowrap; color:#b9c6dc; }
+  .tnode:hover { background:#172033; }
+  .tnode.sel { background:#1c2942; color:#eaf2ff; }
+  .tnode.dir { color:#9fb6d9; }
+  .ide-head { padding:8px 12px; border-bottom:1px solid #1f2a3d; font-family:Consolas,monospace; font-size:12.5px; color:#9fb0c9; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .ide-body { margin:0; padding:12px 14px; font-family:Consolas,monospace; font-size:12.5px; line-height:1.5; white-space:pre; color:#dbe6f7; }
+  .ide-body.diff .add { color:#6ee7a8; } .ide-body.diff .del { color:#f9a8a8; } .ide-body.diff .hdr { color:#93c5fd; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div><span id="status">● live</span>
   <h1>Local Coding Agent <span class="pill" id="ver"></span> <span class="pill" id="modePill"></span></h1></div>
-  <p class="sub">Số liệu cục bộ trên máy này · since <span id="since"></span> · tự cập nhật 2.5s</p>
+  <p class="sub">Số liệu cục bộ trên máy này · since <span id="since"></span> · tự cập nhật 2.5s · <span class="btn" id="clearBtn" onclick="clearMetrics()">Clear metrics</span></p>
 
   <div class="panel" style="margin-bottom:16px">
     <h3>Đường dẫn ChatGPT đang thao tác (workspace / roots)</h3>
@@ -2013,6 +2451,18 @@ function dashboardHtml() {
   <div class="grid">
     <div class="panel"><h3>Top tools</h3><table id="tools"></table></div>
     <div class="panel"><h3>Recent calls</h3><div id="recent"></div></div>
+  </div>
+
+  <div class="panel">
+    <h3>Files <span class="btn" id="refreshTree" onclick="loadTree()" style="margin-left:8px">Refresh</span> <span class="btn" id="diffBtn" onclick="toggleDiff()" style="margin-left:4px">Diff</span></h3>
+    <div class="ide">
+      <div class="ide-tree" id="tree"><div class="note" style="padding:8px 12px">Loading…</div></div>
+      <div class="ide-view">
+        <div class="ide-head"><span id="viewPath">Chọn một tệp ở bên trái để xem (read-only).</span><span id="viewMeta" class="dim"></span></div>
+        <pre class="ide-body" id="viewBody"></pre>
+      </div>
+    </div>
+    <div class="note">Read-only file browser for the workspace primary root. Diff shows <code>git diff</code> of the primary root. Local only — never tunneled.</div>
   </div>
 </div>
 
@@ -2073,6 +2523,75 @@ async function tick(){
     document.getElementById('status').textContent='○ offline'; document.getElementById('status').style.color='#f87171';
   }
 }
+async function clearMetrics(){
+  if(!confirm('Xóa toàn bộ số liệu (metrics)?')) return;
+  try{ await fetch('/api/clear-metrics',{method:'POST'}); tick(); }
+  catch(e){ alert('Clear failed: '+e); }
+}
+
+// ---- Mini-IDE (Files) ----
+var diffMode=false, selPath=null;
+function loadTree(){
+  diffMode=false; var db=document.getElementById('diffBtn'); if(db) db.classList.remove('active');
+  fetch('/api/tree',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    var el=document.getElementById('tree');
+    if(d.error){ el.innerHTML='<div class="note" style="padding:8px 12px">'+esc(d.error)+'</div>'; return; }
+    var html='';
+    (d.entries||[]).forEach(function(e){
+      var depth=(e.path.match(/\\//g)||[]).length;
+      var name=e.path.split('/').pop();
+      var pad=6+depth*14;
+      if(e.type==='directory'){
+        html+='<div class="tnode dir" style="padding-left:'+pad+'px">'+esc(name)+'/</div>';
+      }else{
+        html+='<div class="tnode" data-path="'+esc(e.path)+'" style="padding-left:'+pad+'px" onclick="openFile(this)">'+esc(name)+'</div>';
+      }
+    });
+    if(d.truncated) html+='<div class="note" style="padding:6px 12px">… (truncated)</div>';
+    el.innerHTML=html||'<div class="note" style="padding:8px 12px">(empty)</div>';
+  }).catch(function(e){ document.getElementById('tree').innerHTML='<div class="note" style="padding:8px 12px">offline</div>'; });
+}
+function openFile(node){
+  var p=node.getAttribute('data-path'); selPath=p; diffMode=false;
+  var db=document.getElementById('diffBtn'); if(db) db.classList.remove('active');
+  document.querySelectorAll('.tnode.sel').forEach(function(n){n.classList.remove('sel');});
+  node.classList.add('sel');
+  document.getElementById('viewPath').textContent=p;
+  document.getElementById('viewMeta').textContent='';
+  var body=document.getElementById('viewBody'); body.className='ide-body'; body.textContent='Loading…';
+  fetch('/api/file?path='+encodeURIComponent(p),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    if(d.error){ body.textContent='Error: '+d.error; return; }
+    body.textContent=d.content||'';
+    document.getElementById('viewMeta').textContent=h(d.total_lines)+' lines'+(d.truncated?' · truncated':'');
+  }).catch(function(e){ body.textContent='offline'; });
+}
+function renderDiff(text){
+  var body=document.getElementById('viewBody'); body.className='ide-body diff';
+  if(!text){ body.textContent='(no changes)'; return; }
+  var html=text.split('\\n').map(function(l){
+    var c=esc(l);
+    if(l.indexOf('+++')===0||l.indexOf('---')===0) return '<span class="hdr">'+c+'</span>';
+    if(l[0]==='+') return '<span class="add">'+c+'</span>';
+    if(l[0]==='-') return '<span class="del">'+c+'</span>';
+    if(l.indexOf('@@')===0||l.indexOf('diff --git')===0) return '<span class="hdr">'+c+'</span>';
+    return c;
+  }).join('\\n');
+  body.innerHTML=html;
+}
+function toggleDiff(){
+  diffMode=!diffMode;
+  var db=document.getElementById('diffBtn');
+  if(!diffMode){ db.classList.remove('active'); document.getElementById('viewPath').textContent=selPath||'Chọn một tệp.'; var b=document.getElementById('viewBody'); b.className='ide-body'; b.textContent=''; return; }
+  db.classList.add('active');
+  document.getElementById('viewPath').textContent='git diff (primary root)';
+  document.getElementById('viewMeta').textContent='';
+  var body=document.getElementById('viewBody'); body.className='ide-body'; body.textContent='Loading…';
+  fetch('/api/diff',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    if(d.error){ body.textContent='Error: '+d.error; return; }
+    renderDiff(d.diff||'');
+  }).catch(function(e){ body.textContent='offline'; });
+}
+loadTree();
 tick(); setInterval(tick,2500);
 </script>
 </body>

@@ -12,7 +12,7 @@ $Csproj = Join-Path $ProjDir "LocalCodingAgentTray.csproj"
 $OutDir = Join-Path $ProjDir "publish"
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-    throw "The .NET SDK is required to build. Install .NET 8 SDK: https://aka.ms/dotnet/download"
+    throw "The .NET SDK is required to build. Install .NET 10 SDK: https://aka.ms/dotnet/download"
 }
 
 # A running instance locks the output exe and makes publish silently fail to

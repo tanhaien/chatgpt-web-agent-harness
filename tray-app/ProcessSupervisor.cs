@@ -88,6 +88,13 @@ public sealed class ProcessSupervisor : IDisposable
         psi.ArgumentList.Add(cfg.TunnelProfileDir);
         if (cfg.OpenWebUi) psi.ArgumentList.Add("--open-web-ui");
         psi.Environment["CONTROL_PLANE_API_KEY"] = key;
+        if (!string.IsNullOrWhiteSpace(cfg.AuthToken))
+        {
+            // The MCP server enforces Bearer auth when MCP_AUTH_TOKEN is set.
+            // Pass the header to the tunnel without putting the token in args.
+            psi.Environment["MCP_AUTH_HEADER"] = "Bearer " + cfg.AuthToken;
+            psi.Environment["MCP_EXTRA_HEADERS"] = "Authorization: env:MCP_AUTH_HEADER";
+        }
 
         _tunnel = new Process { StartInfo = psi, EnableRaisingEvents = true };
         _tunnel.OutputDataReceived += (_, e) => { if (e.Data is not null) Log("[tunnel] " + e.Data); };

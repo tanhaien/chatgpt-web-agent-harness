@@ -18,6 +18,8 @@ tools/
 node_modules/
 server/data/
 server/*.log
+tmp-*/
+*-test-workspace/
 
 # ---- .NET / build output ----
 bin/

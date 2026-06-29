@@ -15,7 +15,7 @@ ChatGPT sessions; it is a normal MCP connector you authorize.
 | Info | `workspace_info`, `ping` |
 | Read | `repo_overview`, `list_files`, `find_files`, `read_file`, `read_many`, `stat_path`, `search_text` (ripgrep/git, with context + glob) |
 | Write | `write_file`, `replace_in_file`, `apply_patch`, `make_dir`, `move_path`, `delete_path` |
-| Execute | `run_command` (cmd/powershell/bash) |
+| Execute | `run_command` (cmd/powershell/bash/sh/zsh) |
 | Processes | `proc_start`, `proc_list`, `proc_output`, `proc_stop` |
 | Git | `git` |
 | Notes & session | `save_note`, `list_notes`, `checkpoint`, `resume` |
@@ -43,6 +43,7 @@ npm start
 | `AGENT_HOST` | `127.0.0.1` | Bind address. Keep loopback; the tunnel forwards to it. |
 | `AGENT_WORKSPACE` | `../agent-workspace` | Primary root the agent may touch. |
 | `AGENT_EXTRA_ROOTS` | _(empty)_ | Extra roots, `;`-separated. |
+| `AGENT_EXTRA_ROOTS_JSON` | _(empty)_ | Extra roots as a JSON string array. Prefer this for paths that contain separators. |
 | `AGENT_MODE` | `safe` | `safe` = conservative blocklist; `full` = unrestricted **inside roots**. |
 | `AGENT_ALLOW_DANGEROUS` | _(unset)_ | `1` allows even catastrophic system commands. Leave unset. |
 | `MCP_AUTH_TOKEN` | _(empty)_ | If set, every `/mcp` request must send `Authorization: Bearer <token>`. |

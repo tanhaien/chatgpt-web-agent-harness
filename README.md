@@ -58,7 +58,7 @@ cd local-coding-agent && bash install.sh
 
 ### Features
 
-- **20+ coding tools** over MCP: `repo_overview`, `list_files`, `find_files`,
+- **30+ coding tools** over MCP: `repo_overview`, `list_files`, `find_files`,
   `read_file`, `read_many` (batch read), `search_text` (ripgrep/git, with
   context + glob), `write_file`, `replace_in_file`, `apply_patch` (multi-file),
   `make_dir`, `move_path`, `delete_path`, `run_command` (cmd/powershell/bash),
@@ -67,6 +67,9 @@ cd local-coding-agent && bash install.sh
   fewer round-trips over the tunnel.
 - **Safety layers**: loopback-only bind, root confinement, `safe`/`full` modes,
   catastrophic-command blocklist, optional bearer token, audit log.
+- **v4 cross-platform runtime**: Windows path checks are case-insensitive,
+  macOS/Linux use `bash` or `sh` by default, and process-tree cleanup works on
+  Windows and POSIX process groups.
 - **Windows tray app** (C#/.NET): start/stop, status, copy MCP URL, encrypted
   key storage (DPAPI), authoritative Stop.
 - **Local dashboard** (`/ui`): tool-call metrics, estimated token throughput, a
@@ -105,7 +108,7 @@ is Windows-only**; on macOS/Linux use the CLI launcher `scripts/start-tunnel.sh`
 ### Prerequisites
 
 - **Node.js 18+** (for the server).
-- **.NET 8+ SDK** (only if you build the Windows tray app).
+- **.NET 10 SDK** (only if you build the Windows tray app).
 - A **ChatGPT account** with MCP connector / Apps access.
 - The **OpenAI Secure MCP Tunnel client**. It is **not included** in this repo
   (proprietary). Obtain it from OpenAI and place it at `tools/tunnel-client.exe`
@@ -195,10 +198,15 @@ roots**) → **Save settings → Start** (it restarts with the new path). Re-run
 | `AGENT_HOST` | `127.0.0.1` | Bind address (keep loopback). |
 | `AGENT_WORKSPACE` | `../agent-workspace` | Primary root the agent may touch. |
 | `AGENT_EXTRA_ROOTS` | _(empty)_ | Extra roots, `;`-separated. |
+| `AGENT_EXTRA_ROOTS_JSON` | _(empty)_ | Extra roots as JSON string array; safer for cross-platform paths. |
 | `AGENT_MODE` | `safe` | `safe` = conservative blocklist; `full` = unrestricted inside roots. |
 | `AGENT_ALLOW_DANGEROUS` | _(unset)_ | `1` allows catastrophic system commands. Leave unset. |
 | `MCP_AUTH_TOKEN` | _(empty)_ | If set, `/mcp` requires `Authorization: Bearer <token>`. |
 | `DASHBOARD_PORT` | `8790` | Local dashboard (`0` disables). Avoid `8788` (the tunnel uses it). |
+
+When `MCP_AUTH_TOKEN` is set, the Windows tray app and both launcher scripts
+also pass `Authorization` to the tunnel client via `MCP_EXTRA_HEADERS`, so the
+ChatGPT connector can still reach the protected local `/mcp` endpoint.
 
 ### Security
 
@@ -250,16 +258,19 @@ cd local-coding-agent && bash install.sh
 
 ### Tính năng
 
-- **Hơn 20 tool coding** qua MCP: `repo_overview`, `list_files`, `find_files`,
+- **Hơn 30 tool coding** qua MCP: `repo_overview`, `list_files`, `find_files`,
   `read_file`, `read_many` (đọc nhiều file 1 lần), `search_text` (ripgrep/git,
   kèm context + glob), `write_file`, `replace_in_file`, `apply_patch` (sửa nhiều
   file), `make_dir`, `move_path`, `delete_path`, `run_command`
-  (cmd/powershell/bash), tiến trình nền (`proc_start/list/output/stop`), `git`,
+  (cmd/powershell/bash/sh/zsh), tiến trình nền (`proc_start/list/output/stop`), `git`,
   và ghi chú.
 - **Tối ưu tốc độ**: JSON gọn, đường dẫn tương đối, đọc theo lô, map repo trong 1
   lần gọi — giảm round-trip qua tunnel.
 - **Nhiều lớp an toàn**: chỉ bind loopback, giới hạn thư mục gốc, chế độ
   `safe`/`full`, blocklist lệnh thảm hoạ, token tuỳ chọn, audit log.
+- **Runtime đa nền tảng v4**: so sánh path không phân biệt hoa/thường trên
+  Windows, tự chọn `bash`/`sh` trên macOS/Linux và dọn cả cây tiến trình đúng
+  cách trên Windows lẫn POSIX.
 - **App tray Windows** (C#/.NET): start/stop, trạng thái, copy MCP URL, lưu key
   mã hoá (DPAPI), nút Stop dừng được cả tiến trình ngoài app.
 - **Dashboard cục bộ** (`/ui`): số liệu tool, ước tính token, biểu đồ theo phút,
@@ -298,7 +309,7 @@ Windows**; trên macOS/Linux dùng launcher dòng lệnh `scripts/start-tunnel.s
 ### Yêu cầu
 
 - **Node.js 18+** (cho server).
-- **.NET 8+ SDK** (chỉ khi build app tray Windows).
+- **.NET 10 SDK** (chỉ khi build app tray Windows).
 - Tài khoản **ChatGPT** có quyền dùng MCP connector / Apps.
 - **OpenAI Secure MCP Tunnel client**. **Không kèm** trong repo (độc quyền). Tự
   lấy từ OpenAI, đặt vào `tools/tunnel-client.exe` (Windows) hoặc
@@ -385,10 +396,15 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 | `AGENT_HOST` | `127.0.0.1` | Địa chỉ bind (giữ loopback). |
 | `AGENT_WORKSPACE` | `../agent-workspace` | Thư mục gốc agent được phép đụng. |
 | `AGENT_EXTRA_ROOTS` | _(trống)_ | Thư mục thêm, ngăn cách bằng `;`. |
+| `AGENT_EXTRA_ROOTS_JSON` | _(trống)_ | Mảng JSON chứa các thư mục thêm; nên dùng khi path có ký tự phân cách. |
 | `AGENT_MODE` | `safe` | `safe` = chặn cẩn trọng; `full` = toàn quyền trong root. |
 | `AGENT_ALLOW_DANGEROUS` | _(không đặt)_ | `1` cho phép lệnh hệ thống thảm hoạ. Nên để trống. |
 | `MCP_AUTH_TOKEN` | _(trống)_ | Nếu đặt, `/mcp` yêu cầu `Authorization: Bearer <token>`. |
 | `DASHBOARD_PORT` | `8790` | Dashboard cục bộ (`0` để tắt). Tránh `8788` (tunnel dùng). |
+
+Khi đặt `MCP_AUTH_TOKEN`, app tray Windows và cả hai launcher cũng truyền
+header `Authorization` cho tunnel qua `MCP_EXTRA_HEADERS`, vì vậy connector
+ChatGPT vẫn truy cập được endpoint `/mcp` đã bật bảo vệ.
 
 ### Bảo mật
 
