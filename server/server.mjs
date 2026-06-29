@@ -153,7 +153,7 @@ const bootStartedAt = Date.now();
 await mkdir(DATA_DIR, { recursive: true });
 await mkdir(PRIMARY_ROOT, { recursive: true });
 
-const metrics = loadMetrics();
+let metrics = loadMetrics();
 
 // Detect ripgrep once at startup — the fastest search engine when present.
 const RG_BIN = await detectRg();
@@ -237,6 +237,11 @@ if (DASHBOARD_PORT > 0) {
       const url = new URL(req.url || "/", `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`);
       if (url.pathname === "/metrics") return sendJson(res, 200, metricsSnapshot());
       if (url.pathname === "/ui") return sendHtml(res, dashboardHtml());
+      // Mini-IDE JSON APIs (local-only, read-only except clear-metrics).
+      if (url.pathname === "/api/tree") return void dashApiTree(url, res);
+      if (url.pathname === "/api/file") return void dashApiFile(url, res);
+      if (url.pathname === "/api/diff") return void dashApiDiff(url, res);
+      if (url.pathname === "/api/clear-metrics" && req.method === "POST") return void dashApiClearMetrics(res);
       if (url.pathname === "/") {
         res.writeHead(302, { Location: "/ui" });
         return res.end();
@@ -2135,6 +2140,86 @@ function homeHtml() {
 </html>`;
 }
 
+// ----------------------------------------------------------------------------
+// Mini-IDE dashboard APIs (local-only). Read-only file/tree/diff + clear-metrics.
+// Reuse the same root confinement (resolvePath) and SKIP_DIRS as the MCP tools.
+// ----------------------------------------------------------------------------
+async function dashApiTree(url, res) {
+  try {
+    const rel = url.searchParams.get("path") || ".";
+    const start = resolvePath(rel);
+    const depth = Math.min(Math.max(Number(url.searchParams.get("depth") || 4), 1), 8);
+    const maxEntries = Math.min(Math.max(Number(url.searchParams.get("max") || 2000), 10), 6000);
+    const { tree } = await buildTree(start, depth, maxEntries);
+    const entries = tree.map((abs) => {
+      const isDir = abs.endsWith(path.sep);
+      const clean = isDir ? abs.slice(0, -1) : abs;
+      return { path: toRel(clean), type: isDir ? "directory" : "file" };
+    });
+    return sendJson(res, 200, {
+      root: toRel(start),
+      truncated: tree.length >= maxEntries,
+      count: entries.length,
+      entries
+    });
+  } catch (error) {
+    return sendJson(res, 400, { error: error?.message || "error" });
+  }
+}
+
+async function dashApiFile(url, res) {
+  try {
+    const rel = url.searchParams.get("path");
+    if (!rel) return sendJson(res, 400, { error: "path is required" });
+    const filePath = resolvePath(rel);
+    const info = await stat(filePath);
+    if (info.isDirectory()) return sendJson(res, 400, { error: "path is a directory" });
+    const raw = await readFile(filePath, "utf8");
+    const total_lines = raw.split(/\r?\n/).length;
+    const cap = MAX_READ_CHARS;
+    const truncated = raw.length > cap;
+    return sendJson(res, 200, {
+      path: toRel(filePath),
+      total_lines,
+      chars: raw.length,
+      truncated,
+      content: truncated ? raw.slice(0, cap) : raw
+    });
+  } catch (error) {
+    return sendJson(res, 400, { error: error?.message || "error" });
+  }
+}
+
+async function dashApiDiff(url, res) {
+  try {
+    const rel = url.searchParams.get("path");
+    const args = ["diff"];
+    if (rel) {
+      const target = resolvePath(rel);
+      args.push("--", target);
+    }
+    const result = await spawnCapture("git", args, PRIMARY_ROOT, DEFAULT_CMD_TIMEOUT);
+    return sendJson(res, 200, {
+      root: toRel(PRIMARY_ROOT),
+      diff: result.stdout || "",
+      empty: !(result.stdout || "").trim(),
+      stderr: result.stderr || undefined
+    });
+  } catch (error) {
+    return sendJson(res, 400, { error: error?.message || "error" });
+  }
+}
+
+function dashApiClearMetrics(res) {
+  try {
+    metrics = emptyMetrics();
+    saveMetricsSync();
+    return sendJson(res, 200, { ok: true, cleared: true });
+  } catch (error) {
+    return sendJson(res, 500, { error: error?.message || "error" });
+  }
+}
+
 function dashboardHtml() {
   return `<!doctype html>
 <html lang="en">
@@ -2169,13 +2254,27 @@ function dashboardHtml() {
   .pill { display:inline-block; font-size:12px; padding:2px 9px; border-radius:999px; background:#1e293b; color:#93c5fd; margin-left:6px; }
   #status { float:right; font-size:13px; color:#2dd4bf; }
   .note { color:#6b7790; font-size:12px; margin-top:6px; }
+  .btn { display:inline-block; cursor:pointer; font-size:12px; padding:4px 11px; border-radius:7px; background:#1e293b; color:#93c5fd; border:1px solid #2a3a55; }
+  .btn:hover { background:#243349; }
+  .btn.active { background:#0f766e; color:#d7fff7; border-color:#0f766e; }
+  .ide { display:grid; grid-template-columns:300px 1fr; gap:0; border:1px solid #1f2a3d; border-radius:10px; overflow:hidden; min-height:360px; }
+  @media (max-width:820px){ .ide { grid-template-columns:1fr; } }
+  .ide-tree { background:#0c1018; border-right:1px solid #1f2a3d; max-height:520px; overflow:auto; padding:8px 0; }
+  .ide-view { background:#10141d; max-height:520px; overflow:auto; }
+  .tnode { font-family:Consolas,monospace; font-size:12.5px; padding:3px 10px 3px 0; cursor:pointer; white-space:nowrap; color:#b9c6dc; }
+  .tnode:hover { background:#172033; }
+  .tnode.sel { background:#1c2942; color:#eaf2ff; }
+  .tnode.dir { color:#9fb6d9; }
+  .ide-head { padding:8px 12px; border-bottom:1px solid #1f2a3d; font-family:Consolas,monospace; font-size:12.5px; color:#9fb0c9; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .ide-body { margin:0; padding:12px 14px; font-family:Consolas,monospace; font-size:12.5px; line-height:1.5; white-space:pre; color:#dbe6f7; }
+  .ide-body.diff .add { color:#6ee7a8; } .ide-body.diff .del { color:#f9a8a8; } .ide-body.diff .hdr { color:#93c5fd; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div><span id="status">● live</span>
   <h1>Local Coding Agent <span class="pill" id="ver"></span> <span class="pill" id="modePill"></span></h1></div>
-  <p class="sub">Số liệu cục bộ trên máy này · since <span id="since"></span> · tự cập nhật 2.5s</p>
+  <p class="sub">Số liệu cục bộ trên máy này · since <span id="since"></span> · tự cập nhật 2.5s · <span class="btn" id="clearBtn" onclick="clearMetrics()">Clear metrics</span></p>
 
   <div class="panel" style="margin-bottom:16px">
     <h3>Đường dẫn ChatGPT đang thao tác (workspace / roots)</h3>
@@ -2194,6 +2293,18 @@ function dashboardHtml() {
   <div class="grid">
     <div class="panel"><h3>Top tools</h3><table id="tools"></table></div>
     <div class="panel"><h3>Recent calls</h3><div id="recent"></div></div>
+  </div>
+
+  <div class="panel">
+    <h3>Files <span class="btn" id="refreshTree" onclick="loadTree()" style="margin-left:8px">Refresh</span> <span class="btn" id="diffBtn" onclick="toggleDiff()" style="margin-left:4px">Diff</span></h3>
+    <div class="ide">
+      <div class="ide-tree" id="tree"><div class="note" style="padding:8px 12px">Loading…</div></div>
+      <div class="ide-view">
+        <div class="ide-head"><span id="viewPath">Chọn một tệp ở bên trái để xem (read-only).</span><span id="viewMeta" class="dim"></span></div>
+        <pre class="ide-body" id="viewBody"></pre>
+      </div>
+    </div>
+    <div class="note">Read-only file browser for the workspace primary root. Diff shows <code>git diff</code> of the primary root. Local only — never tunneled.</div>
   </div>
 </div>
 
@@ -2254,6 +2365,75 @@ async function tick(){
     document.getElementById('status').textContent='○ offline'; document.getElementById('status').style.color='#f87171';
   }
 }
+async function clearMetrics(){
+  if(!confirm('Xóa toàn bộ số liệu (metrics)?')) return;
+  try{ await fetch('/api/clear-metrics',{method:'POST'}); tick(); }
+  catch(e){ alert('Clear failed: '+e); }
+}
+
+// ---- Mini-IDE (Files) ----
+var diffMode=false, selPath=null;
+function loadTree(){
+  diffMode=false; var db=document.getElementById('diffBtn'); if(db) db.classList.remove('active');
+  fetch('/api/tree',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    var el=document.getElementById('tree');
+    if(d.error){ el.innerHTML='<div class="note" style="padding:8px 12px">'+esc(d.error)+'</div>'; return; }
+    var html='';
+    (d.entries||[]).forEach(function(e){
+      var depth=(e.path.match(/\\//g)||[]).length;
+      var name=e.path.split('/').pop();
+      var pad=6+depth*14;
+      if(e.type==='directory'){
+        html+='<div class="tnode dir" style="padding-left:'+pad+'px">'+esc(name)+'/</div>';
+      }else{
+        html+='<div class="tnode" data-path="'+esc(e.path)+'" style="padding-left:'+pad+'px" onclick="openFile(this)">'+esc(name)+'</div>';
+      }
+    });
+    if(d.truncated) html+='<div class="note" style="padding:6px 12px">… (truncated)</div>';
+    el.innerHTML=html||'<div class="note" style="padding:8px 12px">(empty)</div>';
+  }).catch(function(e){ document.getElementById('tree').innerHTML='<div class="note" style="padding:8px 12px">offline</div>'; });
+}
+function openFile(node){
+  var p=node.getAttribute('data-path'); selPath=p; diffMode=false;
+  var db=document.getElementById('diffBtn'); if(db) db.classList.remove('active');
+  document.querySelectorAll('.tnode.sel').forEach(function(n){n.classList.remove('sel');});
+  node.classList.add('sel');
+  document.getElementById('viewPath').textContent=p;
+  document.getElementById('viewMeta').textContent='';
+  var body=document.getElementById('viewBody'); body.className='ide-body'; body.textContent='Loading…';
+  fetch('/api/file?path='+encodeURIComponent(p),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    if(d.error){ body.textContent='Error: '+d.error; return; }
+    body.textContent=d.content||'';
+    document.getElementById('viewMeta').textContent=h(d.total_lines)+' lines'+(d.truncated?' · truncated':'');
+  }).catch(function(e){ body.textContent='offline'; });
+}
+function renderDiff(text){
+  var body=document.getElementById('viewBody'); body.className='ide-body diff';
+  if(!text){ body.textContent='(no changes)'; return; }
+  var html=text.split('\\n').map(function(l){
+    var c=esc(l);
+    if(l.indexOf('+++')===0||l.indexOf('---')===0) return '<span class="hdr">'+c+'</span>';
+    if(l[0]==='+') return '<span class="add">'+c+'</span>';
+    if(l[0]==='-') return '<span class="del">'+c+'</span>';
+    if(l.indexOf('@@')===0||l.indexOf('diff --git')===0) return '<span class="hdr">'+c+'</span>';
+    return c;
+  }).join('\\n');
+  body.innerHTML=html;
+}
+function toggleDiff(){
+  diffMode=!diffMode;
+  var db=document.getElementById('diffBtn');
+  if(!diffMode){ db.classList.remove('active'); document.getElementById('viewPath').textContent=selPath||'Chọn một tệp.'; var b=document.getElementById('viewBody'); b.className='ide-body'; b.textContent=''; return; }
+  db.classList.add('active');
+  document.getElementById('viewPath').textContent='git diff (primary root)';
+  document.getElementById('viewMeta').textContent='';
+  var body=document.getElementById('viewBody'); body.className='ide-body'; body.textContent='Loading…';
+  fetch('/api/diff',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    if(d.error){ body.textContent='Error: '+d.error; return; }
+    renderDiff(d.diff||'');
+  }).catch(function(e){ body.textContent='offline'; });
+}
+loadTree();
 tick(); setInterval(tick,2500);
 </script>
 </body>
