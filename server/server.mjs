@@ -27,7 +27,7 @@ import { z } from "zod";
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
 // ----------------------------------------------------------------------------
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 const PORT = Number(process.env.PORT || 8787);
 // Bind to loopback by default. The local OpenAI tunnel-client forwards to this,
 // so we never need to listen on 0.0.0.0 (which would expose a shell to the LAN).
@@ -1876,6 +1876,12 @@ function dashboardHtml() {
   <h1>Local Coding Agent <span class="pill" id="ver"></span> <span class="pill" id="modePill"></span></h1></div>
   <p class="sub">Số liệu cục bộ trên máy này · since <span id="since"></span> · tự cập nhật 2.5s</p>
 
+  <div class="panel" style="margin-bottom:16px">
+    <h3>Đường dẫn ChatGPT đang thao tác (workspace / roots)</h3>
+    <div id="roots" style="font-family:Consolas,monospace;font-size:13px;color:#7fe0d2"></div>
+    <div class="note">MCP endpoint: <span id="mcpep"></span> · Đây là thư mục mà ChatGPT đọc/ghi qua MCP. Để kiểm chứng, bảo ChatGPT chạy tool <b>workspace_info</b> — nó trả về đúng các path này.</div>
+  </div>
+
   <div class="cards" id="cards"></div>
 
   <div class="panel">
@@ -1906,6 +1912,8 @@ function renderCards(d){
   document.getElementById('ver').textContent='v'+(d.version||'');
   document.getElementById('modePill').textContent=(d.mode||'')+' mode';
   document.getElementById('since').textContent=d.since? new Date(d.since).toLocaleString():'-';
+  document.getElementById('roots').innerHTML=(d.roots||[]).map(function(r){return esc(r);}).join('<br>')||'-';
+  document.getElementById('mcpep').textContent=d.mcp_endpoint||'-';
 }
 function renderChart(buckets){
   var c=document.getElementById('chart'), x=c.getContext('2d'); var W=c.width,H=c.height; x.clearRect(0,0,W,H);

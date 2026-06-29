@@ -25,7 +25,13 @@ public sealed class ProcessSupervisor : IDisposable
 
     public void StartServer(AppConfig cfg)
     {
-        if (NodeRunning) return;
+        // Restart with the latest config if already running (so changing the
+        // workspace/path and pressing Start applies immediately).
+        if (NodeRunning)
+        {
+            StopServer();
+            System.Threading.Thread.Sleep(400);
+        }
 
         if (!File.Exists(Path.Combine(cfg.McpAppDir, cfg.ServerScript)))
             throw new FileNotFoundException($"server script not found: {Path.Combine(cfg.McpAppDir, cfg.ServerScript)}");
