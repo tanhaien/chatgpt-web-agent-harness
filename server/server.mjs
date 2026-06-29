@@ -15,7 +15,7 @@ import {
   appendFile,
   access
 } from "node:fs/promises";
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID, timingSafeEqual } from "node:crypto";
@@ -27,7 +27,7 @@ import { z } from "zod";
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
 // ----------------------------------------------------------------------------
-const VERSION = "2.0.0";
+const VERSION = "2.0.1";
 const PORT = Number(process.env.PORT || 8787);
 // Bind to loopback by default. The local OpenAI tunnel-client forwards to this,
 // so we never need to listen on 0.0.0.0 (which would expose a shell to the LAN).
@@ -1284,6 +1284,13 @@ function registerProcessTools(mcp) {
   );
 }
 
+// Read-only git subcommands allowed in safe mode (mutating ones need full mode).
+const GIT_READONLY = new Set([
+  "status", "diff", "log", "show", "ls-files", "ls-tree", "rev-parse", "blame",
+  "grep", "cat-file", "describe", "shortlog", "reflog", "whatchanged", "name-rev",
+  "merge-base", "symbolic-ref", "for-each-ref", "count-objects", "version", "help"
+]);
+
 function registerGitTool(mcp) {
   reg(
     mcp,
@@ -1298,9 +1305,15 @@ function registerGitTool(mcp) {
     },
     async ({ args, cwd = "." }) => {
       if (MODE !== "full") {
-        const danger = args.join(" ").toLowerCase();
-        if (/(^|\s)(clean)(\s|$)/.test(danger) || /reset\s+--hard/.test(danger)) {
-          throw new Error("Destructive git command blocked in safe mode.");
+        // safe mode: only allow read-only git subcommands. Anything that can
+        // mutate the repo/working tree (restore, checkout --, rm, branch -D,
+        // push --force, reset, clean, …) requires AGENT_MODE=full.
+        const sub = (args.find((a) => !a.startsWith("-")) || "").toLowerCase();
+        const infoFlag = args.some((a) => /^(--version|--help)$/i.test(a) || /^-[vh]$/.test(a));
+        if (!infoFlag && !GIT_READONLY.has(sub)) {
+          throw new Error(
+            `Git "${sub || args[0] || ""}" is blocked in safe mode (only read-only git is allowed). Use git_status/git_diff, or set AGENT_MODE=full.`
+          );
         }
       }
       const workdir = resolvePath(cwd);
@@ -1321,17 +1334,25 @@ function registerGitTool(mcp) {
     },
     async ({ cwd = "." }) => {
       const workdir = resolvePath(cwd);
-      const branchRes = await spawnCapture("git", ["rev-parse", "--abbrev-ref", "HEAD"], workdir, DEFAULT_CMD_TIMEOUT);
       const result = await spawnCapture("git", ["status", "--porcelain"], workdir, DEFAULT_CMD_TIMEOUT);
+      if (result.exit_code !== 0) {
+        // Not a git repo (or git error) — don't pretend it's "clean".
+        return jsonResult({
+          cwd: workdir,
+          is_git_repo: false,
+          clean: null,
+          error: (result.stderr || "git error").split(/\r?\n/)[0]
+        });
+      }
+      const branchRes = await spawnCapture("git", ["rev-parse", "--abbrev-ref", "HEAD"], workdir, DEFAULT_CMD_TIMEOUT);
       const files = parsePorcelain(result.stdout || "");
       return jsonResult({
         cwd: workdir,
+        is_git_repo: true,
         branch: (branchRes.stdout || "").trim() || null,
         clean: files.length === 0,
         count: files.length,
-        files,
-        exit_code: result.exit_code,
-        stderr: result.stderr || undefined
+        files
       });
     }
   );
@@ -1358,14 +1379,20 @@ function registerGitTool(mcp) {
         args.push("--", target);
       }
       const result = await spawnCapture("git", args, workdir, DEFAULT_CMD_TIMEOUT);
+      if (result.exit_code !== 0) {
+        return jsonResult({
+          cwd: workdir,
+          is_git_repo: false,
+          error: (result.stderr || "git error").split(/\r?\n/)[0]
+        });
+      }
       return jsonResult({
         cwd: workdir,
+        is_git_repo: true,
         staged,
         path: rel || null,
         diff: result.stdout || "",
-        empty: !(result.stdout || "").trim(),
-        exit_code: result.exit_code,
-        stderr: result.stderr || undefined
+        empty: !(result.stdout || "").trim()
       });
     }
   );
@@ -1403,15 +1430,50 @@ function parsePorcelain(out) {
 // ----------------------------------------------------------------------------
 // Path safety
 // ----------------------------------------------------------------------------
+// Canonical (symlink/junction-resolved) form of the roots, computed once.
+const REAL_ROOTS = ROOTS.map((r) => {
+  try {
+    return realpathSync(r);
+  } catch {
+    return r;
+  }
+});
+
+// Resolve the longest existing ancestor with realpath, then re-append the
+// not-yet-existing tail. This canonicalizes symlinks/junctions even for files
+// that don't exist yet (e.g. write_file targets).
+function canonicalize(p) {
+  let cur = path.resolve(p);
+  const tail = [];
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = realpathSync(cur);
+      return tail.length ? path.join(real, ...tail) : real;
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return path.resolve(p);
+      tail.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+  return path.resolve(p);
+}
+
 function resolvePath(input = ".") {
   const raw = String(input ?? ".").trim();
   const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(PRIMARY_ROOT, raw);
   if (!isWithinRoots(resolved)) throw new Error(`Path is outside the allowed roots: ${input}`);
+  // Symlink/junction hardening: the REAL target must also be inside a root, so a
+  // link planted in the workspace can't redirect file tools outside it.
+  const canon = canonicalize(resolved);
+  if (canon !== resolved && !isWithinRoots(canon, REAL_ROOTS)) {
+    throw new Error(`Path resolves outside the allowed roots via a link: ${input}`);
+  }
   return resolved;
 }
 
-function isWithinRoots(p) {
-  return ROOTS.some((root) => {
+function isWithinRoots(p, roots = ROOTS) {
+  return roots.some((root) => {
     const withSep = root.endsWith(path.sep) ? root : root + path.sep;
     return p === root || p.startsWith(withSep);
   });
@@ -2057,12 +2119,21 @@ function trimOutput(s, { tail_lines, head_lines, max_chars }) {
   return s.length > max_chars ? s.slice(0, max_chars) : s;
 }
 
+// Fields whose values may carry secrets or large payloads — redact them in the
+// audit log so data/audit.log never stores tokens/keys/file contents/commands.
+const AUDIT_REDACT = /^(content|body|old_text|new_text|command|token|key|secret|password|authorization|auth|api[_-]?key)$/i;
+
 function summarizeArgs(args) {
   try {
     const clone = {};
     for (const [k, v] of Object.entries(args || {})) {
-      if (typeof v === "string" && v.length > 200) clone[k] = `${v.slice(0, 200)}…(${v.length} chars)`;
-      else clone[k] = v;
+      if (AUDIT_REDACT.test(k)) {
+        clone[k] = typeof v === "string" ? `[redacted ${v.length} chars]` : "[redacted]";
+      } else if (typeof v === "string" && v.length > 200) {
+        clone[k] = `${v.slice(0, 200)}…(${v.length} chars)`;
+      } else {
+        clone[k] = v;
+      }
     }
     const s = JSON.stringify(clone);
     return s.length > 800 ? `${s.slice(0, 800)}…` : s;
@@ -2199,11 +2270,20 @@ async function dashApiDiff(url, res) {
       args.push("--", target);
     }
     const result = await spawnCapture("git", args, PRIMARY_ROOT, DEFAULT_CMD_TIMEOUT);
+    if (result.exit_code !== 0) {
+      return sendJson(res, 200, {
+        root: toRel(PRIMARY_ROOT),
+        is_git_repo: false,
+        diff: "",
+        empty: true,
+        error: (result.stderr || "not a git repository").split(/\r?\n/)[0]
+      });
+    }
     return sendJson(res, 200, {
       root: toRel(PRIMARY_ROOT),
+      is_git_repo: true,
       diff: result.stdout || "",
-      empty: !(result.stdout || "").trim(),
-      stderr: result.stderr || undefined
+      empty: !(result.stdout || "").trim()
     });
   } catch (error) {
     return sendJson(res, 400, { error: error?.message || "error" });

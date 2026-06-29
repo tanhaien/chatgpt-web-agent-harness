@@ -77,3 +77,10 @@ authoring, and CI.
 [1.4.1]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v1.4.1
 [1.4.0]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v1.4.0
 [1.3.0]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v1.3.0
+
+## v2.0.1 — security hardening (from code review)
+
+- Root confinement now resolves symlinks/junctions (realpath) so a link planted in the workspace cannot redirect file tools/run_command outside the roots.
+- `git` raw tool in safe mode is now read-only (allowlist); mutating git (restore/checkout --/rm/branch -D/push --force/reset/clean) requires AGENT_MODE=full.
+- `git_status`/`git_diff` (and dashboard /api/diff) return `is_git_repo:false` + a short error on non-git folders instead of faking "clean" or dumping git help.
+- Audit log redacts sensitive arg fields (content/command/token/key/secret/password/authorization/…) so data/audit.log never stores secrets or file contents.
