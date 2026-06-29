@@ -1,18 +1,52 @@
-# Local Coding Agent
+<div align="center">
 
-A local **MCP server** that lets ChatGPT Web (or any MCP client) act as a coding
-agent on **your own machine** — read/write files, run commands, manage
-background processes, and use git — confined to folders you choose. Ships with a
-**Windows tray app** to manage it and a **local metrics dashboard**.
+<img src="docs/banner.svg" alt="Local Coding Agent" width="760" />
+
+<h1>Local Coding Agent</h1>
+
+<p><b>Turn ChatGPT Web into a coding agent on your own machine — via MCP.</b><br/>
+Read/write files · run commands · background processes · git — confined to folders you choose.<br/>
+Ships with a Windows tray app and a live local dashboard.</p>
+
+<p>
+  <a href="https://github.com/LongNgn204/local-coding-agent/releases"><img src="https://img.shields.io/github/v/release/LongNgn204/local-coding-agent?color=2dd4bf&label=release" alt="release" /></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-60a5fa" alt="platforms" />
+  <img src="https://img.shields.io/badge/MCP-server-a78bfa" alt="mcp" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license" /></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A518-339933?logo=node.js&logoColor=white" alt="node" />
+  <a href="https://github.com/LongNgn204/local-coding-agent/stargazers"><img src="https://img.shields.io/github/stars/LongNgn204/local-coding-agent?style=social" alt="stars" /></a>
+</p>
+
+<p><b>🇬🇧 English</b> · <a href="#tiếng-việt">🇻🇳 Tiếng Việt</a></p>
+
+</div>
 
 > ⚠️ This tool can run commands on your computer. Read **[SECURITY.md](SECURITY.md)**
 > before using it. It is not a sandbox; only connect workspaces you trust.
 
-**🇬🇧 English** · **[🇻🇳 Tiếng Việt](#tiếng-việt)**
+<!-- Tip: drop a screen recording at docs/demo.gif and embed it here:
+     <p align="center"><img src="docs/demo.gif" alt="demo" width="760"></p> -->
 
 ---
 
 ## English
+
+### Install in one command
+
+```powershell
+# Windows
+git clone https://github.com/LongNgn204/local-coding-agent.git
+cd local-coding-agent; .\install.ps1
+```
+```bash
+# macOS / Linux
+git clone https://github.com/LongNgn204/local-coding-agent.git
+cd local-coding-agent && bash install.sh
+```
+
+> **Using an AI agent (Claude Code / Codex / Cursor)?** Point it at
+> **[AGENTS.md](AGENTS.md)** — it has exact, copy-pasteable setup steps so the
+> agent can install & verify the repo for you.
 
 ### Features
 
@@ -185,6 +219,23 @@ Windows** để quản lý và một **dashboard số liệu cục bộ**.
 
 > ⚠️ Công cụ này có thể chạy lệnh trên máy bạn. Hãy đọc **[SECURITY.md](SECURITY.md)**
 > trước khi dùng. Đây không phải sandbox; chỉ kết nối workspace bạn tin tưởng.
+
+### Cài đặt 1 lệnh
+
+```powershell
+# Windows
+git clone https://github.com/LongNgn204/local-coding-agent.git
+cd local-coding-agent; .\install.ps1
+```
+```bash
+# macOS / Linux
+git clone https://github.com/LongNgn204/local-coding-agent.git
+cd local-coding-agent && bash install.sh
+```
+
+> **Dùng AI agent (Claude Code / Codex / Cursor)?** Chỉ nó vào file
+> **[AGENTS.md](AGENTS.md)** — có sẵn các bước cài + kiểm chứng để agent tự dựng
+> repo giúp bạn.
 
 ### Tính năng
 
