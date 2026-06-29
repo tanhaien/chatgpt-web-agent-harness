@@ -71,6 +71,9 @@ cd local-coding-agent && bash install.sh
   key storage (DPAPI), authoritative Stop.
 - **Local dashboard** (`/ui`): tool-call metrics, estimated token throughput, a
   per-minute chart, top tools, and recent calls with error reasons.
+- **Skills** (Claude-style): drop reusable playbooks in `skills/` or your
+  workspace's `.claude/skills/`; the agent discovers and loads them on demand
+  via `list_skills` / `read_skill` (instructions stay out of context until needed).
 
 ### Architecture
 
@@ -261,6 +264,9 @@ cd local-coding-agent && bash install.sh
   mã hoá (DPAPI), nút Stop dừng được cả tiến trình ngoài app.
 - **Dashboard cục bộ** (`/ui`): số liệu tool, ước tính token, biểu đồ theo phút,
   top tool, và các lệnh gần đây kèm lý do lỗi.
+- **Skills** (kiểu Claude): bỏ "playbook" tái dùng vào `skills/` hoặc
+  `.claude/skills/` của workspace; agent tự dò và nạp khi cần qua `list_skills` /
+  `read_skill` (chỉ nạp lúc cần, đỡ tốn context).
 
 ### Kiến trúc
 

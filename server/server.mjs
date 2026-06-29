@@ -27,7 +27,7 @@ import { z } from "zod";
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
 // ----------------------------------------------------------------------------
-const VERSION = "1.5.0";
+const VERSION = "1.6.0";
 const PORT = Number(process.env.PORT || 8787);
 // Bind to loopback by default. The local OpenAI tunnel-client forwards to this,
 // so we never need to listen on 0.0.0.0 (which would expose a shell to the LAN).
@@ -68,6 +68,15 @@ const NOTES_PATH = path.resolve(DATA_DIR, "notes.json");
 const CHECKPOINT_PATH = path.resolve(DATA_DIR, "checkpoint.json");
 const AUDIT_PATH = path.resolve(DATA_DIR, "audit.log");
 const METRICS_PATH = path.resolve(DATA_DIR, "metrics.json");
+
+// Skills: reusable playbooks the agent can load on demand (Claude-style).
+// Discovered from: AGENT_SKILLS_DIR (env), the repo's shipped skills/, and each
+// workspace root's .claude/skills and .agent/skills.
+const SKILLS_DIRS = dedupe([
+  ...(process.env.AGENT_SKILLS_DIR ? [path.resolve(process.env.AGENT_SKILLS_DIR)] : []),
+  path.resolve(APP_DIR, "..", "skills"),
+  ...ROOTS.flatMap((r) => [path.join(r, ".claude", "skills"), path.join(r, ".agent", "skills")])
+]);
 
 const MAX_READ_CHARS = Number(process.env.AGENT_MAX_READ_CHARS || 200_000);
 // Default (not max) chars returned by read_file — keeps payloads small so the
@@ -322,6 +331,7 @@ const SERVER_INSTRUCTIONS = [
   "- Keep output small with tail_lines/head_lines/max_output_chars.",
   "Keep the conversation light: do NOT re-read a file you already read; read only the line range you need; never dump a whole large file or large command output unless asked.",
   "When the conversation grows long or feels slow, call checkpoint() with a compact summary + next steps, then tell the user to open a NEW chat; in that fresh chat call resume() first. This resets the heavy context (faster) while keeping your progress.",
+  "If a task matches an available skill, call list_skills first, then read_skill(name) to load its instructions before doing the work.",
   "Prefer a few large, well-targeted calls over many tiny ones."
 ].join("\n");
 
@@ -333,7 +343,50 @@ function createMcpServer() {
   registerExecTools(mcp);
   registerProcessTools(mcp);
   registerGitTool(mcp);
+  registerSkillTools(mcp);
   return mcp;
+}
+
+function registerSkillTools(mcp) {
+  reg(
+    mcp,
+    "list_skills",
+    {
+      title: "List skills",
+      description: "List reusable skills (playbooks) available to load. Call this when a task might match a skill; it is cheap (names + descriptions only).",
+      inputSchema: {}
+    },
+    async () => {
+      const skills = await discoverSkills();
+      return jsonResult({
+        count: skills.length,
+        skills: skills.map((s) => ({ name: s.name, description: s.description }))
+      });
+    }
+  );
+
+  reg(
+    mcp,
+    "read_skill",
+    {
+      title: "Read skill",
+      description: "Load a skill's full instructions (SKILL.md) and its bundled file list. Call before doing work the skill covers.",
+      inputSchema: { name: z.string().min(1).describe("Skill name from list_skills.") }
+    },
+    async ({ name }) => {
+      const skills = await discoverSkills();
+      const skill = skills.find((s) => s.name.toLowerCase() === String(name).toLowerCase());
+      if (!skill) throw new Error(`No skill named "${name}". Use list_skills to see available skills.`);
+      const body = await readFile(skill.skillFile, "utf8");
+      let files = [];
+      try {
+        files = (await readdir(skill.dir)).filter((f) => f.toLowerCase() !== "skill.md");
+      } catch {
+        /* ignore */
+      }
+      return jsonResult({ name: skill.name, dir: skill.dir, files, content: body.slice(0, MAX_READ_CHARS) });
+    }
+  );
 }
 
 // ----------------------------------------------------------------------------
@@ -1595,6 +1648,66 @@ async function writeNotes(notes) {
 }
 
 // ----------------------------------------------------------------------------
+// Skills (Claude-style on-demand playbooks)
+// ----------------------------------------------------------------------------
+async function discoverSkills() {
+  const found = [];
+  const seen = new Set();
+  for (const base of SKILLS_DIRS) {
+    let entries;
+    try {
+      entries = await readdir(base, { withFileTypes: true });
+    } catch {
+      continue; // dir doesn't exist
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const dir = path.join(base, e.name);
+      let skillFile = null;
+      try {
+        const files = await readdir(dir);
+        const hit = files.find((f) => f.toLowerCase() === "skill.md");
+        if (hit) skillFile = path.join(dir, hit);
+      } catch {
+        continue;
+      }
+      if (!skillFile) continue;
+      let meta;
+      try {
+        meta = parseSkillMeta(await readFile(skillFile, "utf8"), e.name);
+      } catch {
+        meta = { name: e.name, description: "" };
+      }
+      const key = meta.name.toLowerCase();
+      if (seen.has(key)) continue; // first source wins
+      seen.add(key);
+      found.push({ name: meta.name, description: meta.description, dir, skillFile });
+    }
+  }
+  return found;
+}
+
+function parseSkillMeta(text, fallbackName) {
+  text = text.replace(/^﻿/, ""); // strip UTF-8 BOM (some Windows editors add it)
+  let name = fallbackName;
+  let description = "";
+  const fm = text.match(/^---\s*[\r\n]([\s\S]*?)[\r\n]---/);
+  if (fm) {
+    const block = fm[1];
+    const n = block.match(/^\s*name\s*:\s*(.+?)\s*$/im);
+    const d = block.match(/^\s*description\s*:\s*(.+?)\s*$/im);
+    if (n) name = n[1].replace(/^["']|["']$/g, "").trim();
+    if (d) description = d[1].replace(/^["']|["']$/g, "").trim();
+  }
+  if (!description) {
+    const body = fm ? text.slice(fm[0].length) : text;
+    const firstLine = body.split(/\r?\n/).map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
+    if (firstLine) description = firstLine.slice(0, 200);
+  }
+  return { name, description };
+}
+
+// ----------------------------------------------------------------------------
 // Metrics
 // ----------------------------------------------------------------------------
 function emptyMetrics() {
@@ -1833,7 +1946,7 @@ function homeHtml() {
     <div class="panel"><p><strong>Roots</strong></p>${ROOTS.map((r) => `<p><code>${escapeHtml(r)}</code></p>`).join("")}</div>
     <div class="panel"><p><strong>MCP endpoint</strong></p><p><code>http://${HOST}:${PORT}/mcp</code></p></div>
     <div class="panel"><p><strong>Tools</strong></p>
-      <p><code>workspace_info, repo_overview, list_files, find_files, read_file, read_many, stat_path, search_text, write_file, replace_in_file, apply_patch, make_dir, move_path, delete_path, run_command, proc_start, proc_list, proc_output, proc_stop, git, ping, save_note, list_notes, checkpoint, resume</code></p>
+      <p><code>workspace_info, repo_overview, list_files, find_files, read_file, read_many, stat_path, search_text, write_file, replace_in_file, apply_patch, make_dir, move_path, delete_path, run_command, proc_start, proc_list, proc_output, proc_stop, git, list_skills, read_skill, ping, save_note, list_notes, checkpoint, resume</code></p>
     </div>
     <div class="panel"><p><strong>Local dashboard</strong> (this machine only): <code>http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/ui</code></p></div>
   </main>
