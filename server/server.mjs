@@ -27,7 +27,7 @@ import { z } from "zod";
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
 // ----------------------------------------------------------------------------
-const VERSION = "1.4.1";
+const VERSION = "1.5.0";
 const PORT = Number(process.env.PORT || 8787);
 // Bind to loopback by default. The local OpenAI tunnel-client forwards to this,
 // so we never need to listen on 0.0.0.0 (which would expose a shell to the LAN).
@@ -110,7 +110,14 @@ const CATASTROPHIC = [
   /\bdel\b[^\n]*\/s[^\n]*\bc:\\\\/i,
   /\bcipher\b\s+\/w/i,
   /\b(reg)\b\s+delete\s+hk(lm|ey_local_machine)/i,
-  /:\(\)\s*\{\s*:\|:&\s*\}\s*;:/ // fork bomb
+  /:\(\)\s*\{\s*:\|:&\s*\}\s*;:/, // fork bomb
+  // --- Unix / macOS / Linux ---
+  /\brm\s+-[rRfile]*\s+(--no-preserve-root\s+)?\/(\s|$|\*)/i, // rm -rf /
+  /\bdd\b[^\n]*\bof=\/dev\/(sd|nvme|disk|hd)/i, // overwrite a disk
+  /\bmkfs\.[a-z0-9]+\b/i,
+  /\b(reboot|halt|poweroff|init\s+0)\b/i,
+  /\bchmod\s+-R\s*0*\s+\//i,
+  />\s*\/dev\/(sd|nvme|disk|hd)[a-z0-9]/i // write to raw disk
 ];
 
 // Extra blocks that only apply in "safe" mode.

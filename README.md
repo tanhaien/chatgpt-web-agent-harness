@@ -48,18 +48,23 @@ Windows tray app supervises the node server + tunnel-client.
 ```
 server/      Node MCP server (server.mjs) + tests
 tray-app/    C#/.NET WinForms tray app (source)
-scripts/     start-tunnel.ps1 launcher
+scripts/     start-tunnel.ps1 (Windows) + start-tunnel.sh (macOS/Linux)
 tools/        (you create) place your tunnel-client.exe here — gitignored
 ```
+
+### Platforms
+
+The **server runs on Windows, macOS, and Linux** (it's Node.js). The **tray app
+is Windows-only**; on macOS/Linux use the CLI launcher `scripts/start-tunnel.sh`.
 
 ### Prerequisites
 
 - **Node.js 18+** (for the server).
-- **.NET 8+ SDK** (only if you build the tray app).
+- **.NET 8+ SDK** (only if you build the Windows tray app).
 - A **ChatGPT account** with MCP connector / Apps access.
-- The **OpenAI Secure MCP Tunnel client** (`tunnel-client.exe`). It is **not
-  included** in this repo (proprietary). Obtain it from OpenAI and place it at
-  `tools/tunnel-client.exe`.
+- The **OpenAI Secure MCP Tunnel client**. It is **not included** in this repo
+  (proprietary). Obtain it from OpenAI and place it at `tools/tunnel-client.exe`
+  (Windows) or `tools/tunnel-client` (macOS/Linux, `chmod +x` it).
 
 ### Quick start
 
@@ -78,11 +83,17 @@ Check it: open `http://127.0.0.1:8787/healthz` and the dashboard
 
 **2) Expose it to ChatGPT via the secure tunnel**
 
-Put your `tunnel-client.exe` in `tools/`, then:
+Put your tunnel client in `tools/`, then run the launcher for your OS (edit the
+variables at the top first, or set `AGENT_WORKSPACE`):
 
 ```powershell
-# edit the variables at the top of the script first (workspace, tunnel path)
+# Windows
 powershell -ExecutionPolicy Bypass -File scripts\start-tunnel.ps1
+```
+```bash
+# macOS / Linux
+chmod +x scripts/start-tunnel.sh
+AGENT_WORKSPACE="/path/to/your/repo" bash scripts/start-tunnel.sh
 ```
 
 Paste your tunnel Runtime API key when prompted, then add the resulting MCP URL
@@ -210,17 +221,23 @@ App tray Windows giám sát node server + tunnel-client.
 ```
 server/      Node MCP server (server.mjs) + test
 tray-app/    App tray C#/.NET WinForms (source)
-scripts/     Launcher start-tunnel.ps1
+scripts/     Launcher: start-tunnel.ps1 (Windows), start-tunnel.sh (macOS/Linux)
 tools/        (bạn tự tạo) đặt tunnel-client.exe ở đây — đã gitignore
 ```
+
+### Nền tảng
+
+**Server chạy trên Windows, macOS và Linux** (vì là Node.js). **App tray chỉ cho
+Windows**; trên macOS/Linux dùng launcher dòng lệnh `scripts/start-tunnel.sh`.
 
 ### Yêu cầu
 
 - **Node.js 18+** (cho server).
-- **.NET 8+ SDK** (chỉ khi build app tray).
+- **.NET 8+ SDK** (chỉ khi build app tray Windows).
 - Tài khoản **ChatGPT** có quyền dùng MCP connector / Apps.
-- **OpenAI Secure MCP Tunnel client** (`tunnel-client.exe`). **Không kèm** trong
-  repo (độc quyền). Hãy tự lấy từ OpenAI và đặt vào `tools/tunnel-client.exe`.
+- **OpenAI Secure MCP Tunnel client**. **Không kèm** trong repo (độc quyền). Tự
+  lấy từ OpenAI, đặt vào `tools/tunnel-client.exe` (Windows) hoặc
+  `tools/tunnel-client` (macOS/Linux, nhớ `chmod +x`).
 
 ### Bắt đầu nhanh
 
@@ -239,11 +256,17 @@ Kiểm tra: mở `http://127.0.0.1:8787/healthz` và dashboard
 
 **2) Đưa ra ChatGPT qua secure tunnel**
 
-Đặt `tunnel-client.exe` vào `tools/`, rồi:
+Đặt tunnel client vào `tools/`, rồi chạy launcher theo hệ điều hành (sửa biến ở
+đầu script hoặc set `AGENT_WORKSPACE`):
 
 ```powershell
-# sửa các biến ở đầu script trước (workspace, đường dẫn tunnel)
+# Windows
 powershell -ExecutionPolicy Bypass -File scripts\start-tunnel.ps1
+```
+```bash
+# macOS / Linux
+chmod +x scripts/start-tunnel.sh
+AGENT_WORKSPACE="/duong/dan/toi/repo" bash scripts/start-tunnel.sh
 ```
 
 Dán Runtime API key của tunnel khi được hỏi, rồi thêm MCP URL thu được làm
