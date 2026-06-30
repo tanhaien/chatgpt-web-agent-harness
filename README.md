@@ -262,13 +262,20 @@ Keep that terminal open. A healthy tunnel has all of these properties:
 #### 4. Create the app in ChatGPT Web
 
 1. Open **ChatGPT → Settings → Apps → Advanced settings** and enable
-   **Developer mode**.
+   **Developer mode**. If ChatGPT also shows **Enforce CSP in developer mode**,
+   leave it enabled unless you are debugging custom UI resources.
 2. Return to **Settings → Apps** and choose **Create**.
-3. Enter the app name and description.
+3. Enter the app name and description. Suggested values:
+   - **Name:** `Local Coding Agent`
+   - **Description:** `Code on my local machine via MCP`
 4. Under **Connection**, select **Tunnel** (not **Server URL**).
-5. Paste the exact Tunnel ID from step 2.
+5. If the tunnel list is empty, click **Create tunnel**, finish tunnel setup in
+   the OpenAI Platform, then return to ChatGPT and refresh/reopen the app
+   dialog. If the tunnel still does not appear, paste the exact `tunnel_...` ID
+   from step 2.
 6. Select **No Auth** unless the remote app itself implements a separate auth
-   flow. The Secure MCP Tunnel already authenticates its control-plane channel.
+   flow. Do not choose OAuth for the default Local Coding Agent setup. The
+   Secure MCP Tunnel already authenticates its control-plane channel.
 7. Read and accept the custom-MCP risk warning.
 8. If the UI shows **Scan Tools**, run it and wait for the scan to finish. Some
    ChatGPT versions scan automatically when **Create** is pressed.
@@ -278,6 +285,11 @@ Keep that terminal open. A healthy tunnel has all of these properties:
 For initial testing, prefer permission prompts for write/execute actions instead
 of **Allow all (elevated risk)**. This server can modify files and run commands
 inside its configured roots.
+
+After the first successful connection, open the created app entry in ChatGPT to
+review the details page. It shows the connected Tunnel ID and version info. For
+a private trusted workflow, you can set **Permissions → Allow all (elevated
+risk)** so ChatGPT can use the MCP tools without asking on every call.
 
 #### 5. Test the app
 
@@ -583,13 +595,19 @@ Giữ cửa sổ terminal này mở. Tunnel hoạt động đúng khi:
 #### 4. Tạo App trên ChatGPT Web
 
 1. Mở **ChatGPT → Settings → Apps → Advanced settings**, bật
-   **Developer mode**.
+   **Developer mode**. Nếu có mục **Bắt buộc CSP trong chế độ nhà phát triển**,
+   cứ để bật trừ khi bạn đang debug UI resource tuỳ chỉnh.
 2. Quay lại **Settings → Apps**, chọn **Create**.
-3. Nhập tên và mô tả app.
+3. Nhập tên và mô tả app. Gợi ý:
+   - **Tên:** `Local Coding Agent`
+   - **Mô tả:** `Code trên máy local qua MCP`
 4. Trong **Connection**, chọn **Tunnel**, không chọn **Server URL**.
-5. Dán chính xác Tunnel ID ở bước 2.
-6. Chọn **No Auth**, trừ khi app từ xa có thêm luồng xác thực riêng. Secure MCP
-   Tunnel đã xác thực kênh control plane.
+5. Nếu danh sách tunnel trống, bấm **Tạo tunnel**, tạo tunnel bên OpenAI
+   Platform, rồi quay lại ChatGPT và refresh/mở lại hộp thoại tạo app. Nếu
+   tunnel vẫn không hiện, dán chính xác **ID tunnel** dạng `tunnel_...` ở bước 2.
+6. Chọn **No Auth** / **Không có tính năng xác thực**, trừ khi app từ xa có thêm
+   luồng xác thực riêng. Đừng chọn OAuth với cấu hình mặc định của Local Coding
+   Agent. Secure MCP Tunnel đã xác thực kênh control plane.
 7. Đọc và đánh dấu xác nhận cảnh báo custom MCP server.
 8. Nếu giao diện có **Scan Tools**, chạy và đợi quét xong. Một số phiên bản tự
    quét tool sau khi bấm **Create**.
@@ -599,6 +617,11 @@ Giữ cửa sổ terminal này mở. Tunnel hoạt động đúng khi:
 Trong giai đoạn thử nghiệm, nên bật hỏi quyền cho hành động ghi/chạy lệnh thay
 vì **Allow all (elevated risk)**. Server có thể sửa file và chạy command trong
 các root đã cấu hình.
+
+Sau khi kết nối thành công lần đầu, mở lại mục app đã tạo trong ChatGPT để xem
+trang chi tiết. Trang này hiển thị đúng **Mã tunnel** và thông tin phiên bản. Với
+workflow riêng tư đã tin tưởng, bạn có thể đặt **Quyền → Cho phép tất cả** để
+ChatGPT dùng tool MCP mà không hỏi lại ở mỗi lần gọi.
 
 #### 5. Kiểm tra App
 
