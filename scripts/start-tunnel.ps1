@@ -43,6 +43,28 @@ function Get-McpHealth {
     } catch { return $null }
 }
 
+function Stop-McpServer([object]$Health) {
+    $pidToStop = 0
+    if ($Health -and $Health.pid) { $pidToStop = [int]$Health.pid }
+
+    if (-not $pidToStop) {
+        $matches = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
+            Where-Object { $_.CommandLine -like "*server.mjs*" })
+        if ($matches.Count -eq 1) { $pidToStop = [int]$matches[0].ProcessId }
+        elseif ($matches.Count -gt 1) {
+            throw "Multiple node server.mjs processes are running; refusing to stop them broadly. Stop the intended PID and retry."
+        }
+    }
+
+    if (-not $pidToStop) { throw "The MCP endpoint is active but its server PID could not be identified safely." }
+    $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $pidToStop" -ErrorAction SilentlyContinue
+    if (-not $processInfo -or $processInfo.Name -ine "node.exe" -or $processInfo.CommandLine -notlike "*server.mjs*") {
+        throw "PID $pidToStop does not look like the Local Coding Agent server; refusing to stop it."
+    }
+    Stop-Process -Id $pidToStop -Force -ErrorAction Stop
+    Start-Sleep -Seconds 1
+}
+
 if (-not $AgentWorkspace) {
     throw "Set `$AgentWorkspace at the top of this script (or the AGENT_WORKSPACE env var) to the folder you want the agent to work in."
 }
@@ -56,20 +78,30 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     throw "Node.js is required but 'node' was not found on PATH."
 }
 
+# A non-secret signature lets the launcher detect every startup-setting change,
+# not only workspace/mode. The auth value itself is deliberately not hashed.
+$configMaterial = [ordered]@{
+    workspace = [IO.Path]::GetFullPath($AgentWorkspace)
+    mode = $AgentMode
+    policy = $AgentPolicy
+    extraRoots = $ExtraRoots
+    authEnabled = [bool]$AuthToken
+    port = $Port
+    dashboardPort = $DashboardPort
+} | ConvertTo-Json -Compress
+$AgentConfigId = $configMaterial | node -e "const c=require('crypto');let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(c.createHash('sha256').update(s).digest('hex').slice(0,16)))"
+
 # Install server deps on first run.
 if (-not (Test-Path -LiteralPath (Join-Path $ServerDir "node_modules"))) {
     Write-Host "Installing server dependencies..."
     Push-Location $ServerDir; npm install; Pop-Location
 }
 
-# Restart the server if it is running with a different workspace/mode.
+# Restart only the server behind this health endpoint when startup config changed.
 $health = Get-McpHealth
-if ($health -and (($health.workspace -ne $AgentWorkspace) -or ($health.mode -ne $AgentMode))) {
+if ($health -and $health.config_id -ne $AgentConfigId) {
     Write-Host "Restarting MCP server with the requested config..."
-    Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
-        Where-Object { $_.CommandLine -like "*server.mjs*" } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 1
+    Stop-McpServer $health
     $health = $null
 }
 
@@ -79,6 +111,7 @@ if (-not $health) {
     $env:AGENT_WORKSPACE = $AgentWorkspace
     $env:AGENT_MODE = $AgentMode
     $env:AGENT_POLICY = $AgentPolicy
+    $env:AGENT_CONFIG_ID = $AgentConfigId
     $env:AGENT_EXTRA_ROOTS = $ExtraRoots
     $env:MCP_AUTH_TOKEN = $AuthToken
     $env:DASHBOARD_PORT = $DashboardPort

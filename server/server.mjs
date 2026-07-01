@@ -29,7 +29,7 @@ import { z } from "zod";
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
 // ----------------------------------------------------------------------------
-const VERSION = "4.2.0-pro";
+const VERSION = "4.3.0-pro";
 const PRODUCT_TIER = "pro";
 const PORT = Number(process.env.PORT || 8787);
 // Bind to loopback by default. The local OpenAI tunnel-client forwards to this,
@@ -43,6 +43,7 @@ const HOST = process.env.AGENT_HOST || "127.0.0.1";
 // health service, so using it here would stop the tunnel from starting.
 const DASHBOARD_PORT = Number(process.env.DASHBOARD_PORT ?? 8790);
 const DASHBOARD_HOST = process.env.DASHBOARD_HOST || "127.0.0.1";
+const CONFIG_ID = String(process.env.AGENT_CONFIG_ID || "");
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WORKSPACE = path.resolve(APP_DIR, "..", "agent-workspace");
@@ -98,6 +99,8 @@ const DECISIONS_PATH = path.join(AGENT_STATE_DIR, "decisions.md");
 
 // v2.6 Approvals
 const APPROVALS_DIR = path.resolve(WORKSPACE_DATA_DIR, "approvals");
+const APPROVAL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const APPROVAL_TTL_MINUTES = boundedNumber(process.env.AGENT_APPROVAL_TTL_MINUTES, 10, 1, 30);
 
 // v2.6 Policy
 const AGENT_POLICY = (() => {
@@ -124,6 +127,7 @@ const MAX_READ_CHARS = Number(process.env.AGENT_MAX_READ_CHARS || 200_000);
 const READ_DEFAULT = Number(process.env.AGENT_READ_DEFAULT || 30_000);
 const CMD_OUTPUT_DEFAULT = Number(process.env.AGENT_CMD_OUTPUT_DEFAULT || 20_000);
 const MAX_COMMAND_OUTPUT = Number(process.env.AGENT_MAX_COMMAND_OUTPUT || 200_000);
+const MAX_BATCH_READ_CHARS = boundedNumber(process.env.AGENT_MAX_BATCH_READ_CHARS, 500_000, 10_000, 2_000_000);
 const MAX_BODY_BYTES = Number(process.env.AGENT_MAX_BODY_BYTES || 16 * 1024 * 1024);
 const DEFAULT_CMD_TIMEOUT = 60_000;
 const MAX_PROCS = 24;
@@ -186,6 +190,7 @@ const SAFE_MODE_BLOCKS = [
 // State
 // ----------------------------------------------------------------------------
 const processes = new Map(); // id -> { id, name, command, child, status, exitCode, startedAt, stdout, stderr }
+let approvalLock = Promise.resolve();
 const bootStartedAt = Date.now();
 
 // ----------------------------------------------------------------------------
@@ -243,10 +248,15 @@ const httpServer = http.createServer(async (req, res) => {
         status: "ok",
         version: VERSION,
         tier: PRODUCT_TIER,
+        pid: process.pid,
         mode: MODE,
+        policy: AGENT_POLICY,
+        allow_dangerous: ALLOW_DANGEROUS,
         auth: AUTH_TOKEN ? "bearer" : "none",
+        config_id: CONFIG_ID || null,
         roots: ROOTS,
         workspace: PRIMARY_ROOT,
+        dashboard_port: DASHBOARD_PORT,
         mcp_endpoint: `http://${HOST}:${PORT}/mcp`
       });
     }
@@ -384,13 +394,14 @@ async function handleMcp(req, res) {
 }
 
 const SERVER_INSTRUCTIONS = [
-  "Local Coding Agent Pro MCP: tool calls cross a tunnel, so start with workspace_snapshot or workspace_doctor, then use read_many/search_text to batch work; prefer dedicated tools over run_command. Policy may require one-time local dashboard approval for risky delete/install/network/mutating-git actions; check policy_status/explain_risk first. File tools are root-confined, but run_command is not an OS sandbox.",
+  "Local Coding Agent Pro MCP: tool calls cross a tunnel, so start with workspace_snapshot or workspace_doctor, then use read_many/search_text/run_commands to batch work; prefer dedicated tools over run_command. Policy may require local dashboard approval for risky delete/install/network/mutating-git actions; exact action batches can use request_approval_batch. File tools are root-confined, but commands are not an OS sandbox.",
   "WORKFLOW: (1) Start with workspace_snapshot for repo/git/test/policy/health in one call; use workspace_doctor when you need operational readiness. (2) Use preview_patch/validate_patch before apply_patch for large edits. (3) After editing source, run quality_gate, run_tests, or run_changed_tests. (4) Before marking 'done', call review_diff and session_report. (5) For multi-step tasks, use task_plan + decision_log to maintain state across chats.",
   "POLICY: Check policy_status if you are unsure whether an action is allowed. In balanced policy, risky operations (delete, install, network, mutating git, risky processes) require one-time local approval.",
   "Use the DEDICATED tools instead of run_command for these — they are faster and cheaper:",
   "- Find files by name -> find_files (NOT dir/ls/Get-ChildItem/where).",
   "- Search file contents -> search_text with context= (NOT grep/findstr/Select-String).",
-  "- Read files -> read_many for several, read_file for one (NOT type/cat/Get-Content).",
+  "- Read files -> read_many for several or targeted ranges, read_file for one (NOT type/cat/Get-Content).",
+  "- Run independent checks -> run_commands once; keep parallel=false unless commands cannot race.",
   "- Map a repo -> workspace_snapshot first, repo_map for deeper tree detail; use workspace_doctor for readiness checks.",
   "- Create/edit files -> write_file / apply_patch (with a unified `diff` for many edits) (NOT echo>/Set-Content).",
   "- Symbol search -> repo_symbols for function/class definitions.",
@@ -618,7 +629,12 @@ function registerBasicTools(mcp) {
         roots: ROOTS,
         primary_root: PRIMARY_ROOT,
         host: { platform: os.platform(), release: os.release(), hostname: os.hostname(), cwd: process.cwd(), node: process.version },
-        limits: { max_read_chars: MAX_READ_CHARS, max_command_output: MAX_COMMAND_OUTPUT, max_procs: MAX_PROCS },
+        limits: {
+          max_read_chars: MAX_READ_CHARS,
+          max_batch_read_chars: MAX_BATCH_READ_CHARS,
+          max_command_output: MAX_COMMAND_OUTPUT,
+          max_procs: MAX_PROCS
+        },
         running_processes: [...processes.values()].filter((p) => p.status === "running").length,
         safety:
           MODE === "full"
@@ -863,30 +879,84 @@ function registerFsReadTools(mcp) {
     "read_many",
     {
       title: "Read many files",
-      description: "Read several files in ONE call. Use this instead of many read_file calls to cut round-trips and latency.",
+      description: "Read up to 100 files or targeted line ranges in ONE call. Reads run concurrently with a bounded worker pool and a total output cap, cutting tunnel round-trips without flooding context.",
       inputSchema: {
-        paths: z.array(z.string().min(1)).min(1).max(50).describe("File paths to read."),
-        max_chars_per_file: z.number().int().min(1).max(MAX_READ_CHARS).optional()
+        paths: z.array(z.string().min(1)).min(1).max(100).optional().describe("Simple file paths to read."),
+        requests: z.array(z.object({
+          path: z.string().min(1),
+          start_line: z.number().int().min(1).optional(),
+          line_count: z.number().int().min(1).max(10000).optional(),
+          max_chars: z.number().int().min(1).max(MAX_READ_CHARS).optional()
+        })).min(1).max(100).optional().describe("Structured reads with optional line ranges. Use either paths or requests."),
+        max_chars_per_file: z.number().int().min(1).max(MAX_READ_CHARS).optional(),
+        concurrency: z.number().int().min(1).max(16).optional().describe("Concurrent local reads (default 8).")
       }
     },
-    async ({ paths, max_chars_per_file = 40_000 }) => {
-      const files = [];
-      for (const p of paths) {
-        try {
-          const fp = resolvePath(p);
-          const content = await readFile(fp, "utf8");
-          const truncated = content.length > max_chars_per_file;
-          files.push({
-            path: toRel(fp),
-            chars: content.length,
-            truncated,
-            content: truncated ? content.slice(0, max_chars_per_file) : content
-          });
-        } catch (err) {
-          files.push({ path: p, error: String(err?.message || err) });
+    async ({ paths, requests, max_chars_per_file = 40_000, concurrency = 8 }) => {
+      if (paths?.length && requests?.length) throw new Error("Use either paths or requests, not both.");
+      const items = requests?.length ? requests : (paths || []).map((p) => ({ path: p }));
+      if (!items.length) throw new Error("Provide at least one path or read request.");
+
+      const files = new Array(items.length);
+      let cursor = 0;
+      const worker = async () => {
+        while (true) {
+          const index = cursor++;
+          if (index >= items.length) return;
+          const request = items[index];
+          try {
+            const fp = resolvePath(request.path);
+            const content = await readFile(fp, "utf8");
+            const maxChars = request.max_chars || max_chars_per_file;
+            if (request.start_line || request.line_count) {
+              const lines = content.split(/\r?\n/);
+              const start = request.start_line || 1;
+              const count = request.line_count || lines.length;
+              const selected = lines.slice(start - 1, start - 1 + count).join("\n");
+              files[index] = {
+                path: toRel(fp),
+                total_lines: lines.length,
+                start_line: start,
+                returned_lines: Math.min(count, Math.max(0, lines.length - start + 1)),
+                chars: selected.length,
+                truncated: selected.length > maxChars,
+                content: selected.slice(0, maxChars)
+              };
+              continue;
+            }
+            files[index] = {
+              path: toRel(fp),
+              chars: content.length,
+              truncated: content.length > maxChars,
+              content: content.slice(0, maxChars)
+            };
+          } catch (err) {
+            files[index] = { path: request.path, error: String(err?.message || err) };
+          }
         }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+
+      let remaining = MAX_BATCH_READ_CHARS;
+      let batchTruncated = false;
+      for (const file of files) {
+        if (typeof file.content !== "string") continue;
+        if (file.content.length > remaining) {
+          file.content = file.content.slice(0, Math.max(0, remaining));
+          file.truncated = true;
+          file.batch_truncated = true;
+          batchTruncated = true;
+        }
+        remaining = Math.max(0, remaining - file.content.length);
       }
-      return jsonResult({ count: files.length, files });
+      return jsonResult({
+        count: files.length,
+        failed: files.filter((f) => f.error).length,
+        chars_returned: MAX_BATCH_READ_CHARS - remaining,
+        max_batch_chars: MAX_BATCH_READ_CHARS,
+        batch_truncated: batchTruncated,
+        files
+      });
     }
   );
 
@@ -1303,6 +1373,77 @@ function registerExecTools(mcp) {
       });
     }
   );
+
+  reg(
+    mcp,
+    "run_commands",
+    {
+      title: "Run command batch",
+      description: "Run up to 12 bounded commands in one MCP call. Sequential is the safe default; set parallel=true only for independent checks. Each command still passes mode, policy, root, timeout, and output guards.",
+      inputSchema: {
+        commands: z.array(z.object({
+          command: z.string().min(1),
+          cwd: z.string().optional(),
+          shell: z.enum(["cmd", "powershell", "bash", "sh", "zsh"]).optional(),
+          timeout_ms: z.number().int().min(1000).max(600000).optional(),
+          max_output_chars: z.number().int().min(500).max(50_000).optional()
+        })).min(1).max(12),
+        parallel: z.boolean().optional().describe("Run independent commands concurrently (default false)."),
+        max_concurrency: z.number().int().min(1).max(4).optional(),
+        stop_on_failure: z.boolean().optional().describe("Sequential mode only; default true.")
+      }
+    },
+    async ({ commands, parallel = false, max_concurrency = 4, stop_on_failure = true }) => {
+      const results = new Array(commands.length);
+      const runOne = async (item, index) => {
+        assertCommandAllowed(item.command);
+        const workdir = resolvePath(item.cwd || ".");
+        const result = await runShellCommand(item.command, workdir, item.shell, item.timeout_ms || DEFAULT_CMD_TIMEOUT);
+        const maxChars = item.max_output_chars || 10_000;
+        const stdout = trimOutput(result.stdout, { max_chars: maxChars });
+        const stderr = trimOutput(result.stderr, { max_chars: maxChars });
+        results[index] = {
+          index,
+          cwd: workdir,
+          command: item.command,
+          shell: item.shell || defaultShell(),
+          exit_code: result.exit_code,
+          timed_out: result.timed_out,
+          stdout_truncated: stdout.length < result.stdout.length,
+          stderr_truncated: stderr.length < result.stderr.length,
+          stdout,
+          stderr
+        };
+      };
+
+      if (parallel) {
+        let cursor = 0;
+        const worker = async () => {
+          while (true) {
+            const index = cursor++;
+            if (index >= commands.length) return;
+            await runOne(commands[index], index);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(max_concurrency, commands.length) }, () => worker()));
+      } else {
+        for (let index = 0; index < commands.length; index++) {
+          await runOne(commands[index], index);
+          if (stop_on_failure && results[index].exit_code !== 0) break;
+        }
+      }
+
+      const completed = results.filter(Boolean);
+      return jsonResult({
+        ok: completed.length === commands.length && completed.every((result) => result.exit_code === 0),
+        parallel,
+        requested: commands.length,
+        completed: completed.length,
+        stopped_early: completed.length < commands.length,
+        results: completed
+      });
+    }
+  );
 }
 
 function registerProcessTools(mcp) {
@@ -1583,12 +1724,12 @@ function canonicalize(p) {
 function resolvePath(input = ".") {
   const raw = String(input ?? ".").trim();
   const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(PRIMARY_ROOT, raw);
-  if (!isWithinRoots(resolved)) throw new Error(`Path is outside the allowed roots: ${input}`);
-  // Symlink/junction hardening: the REAL target must also be inside a root, so a
-  // link planted in the workspace can't redirect file tools outside it.
+  // Validate the canonical path. Besides blocking symlink/junction escapes,
+  // this avoids false rejections on case-insensitive macOS volumes when the
+  // caller uses different path casing than the filesystem stores.
   const canon = canonicalize(resolved);
-  if (canon !== resolved && !isWithinRoots(canon, REAL_ROOTS)) {
-    throw new Error(`Path resolves outside the allowed roots via a link: ${input}`);
+  if (!isWithinRoots(canon, REAL_ROOTS)) {
+    throw new Error(`Path is outside the allowed roots or resolves outside via a link: ${input}`);
   }
   return resolved;
 }
@@ -2249,6 +2390,7 @@ function computeHealthInsights() {
   const readFileCalls = metrics.perTool?.read_file?.calls || 0;
   const readManyCalls = metrics.perTool?.read_many?.calls || 0;
   const runCommandCalls = metrics.perTool?.run_command?.calls || 0;
+  const runCommandsCalls = metrics.perTool?.run_commands?.calls || 0;
   const searchCalls = metrics.perTool?.search_text?.calls || 0;
   const recentErrors = (metrics.recent || []).filter((r) => !r.ok).length;
   const tokensPerCall = total ? estTokens(metrics.inChars + metrics.outChars) / total : 0;
@@ -2280,7 +2422,9 @@ function computeHealthInsights() {
   if (runCommandCalls > Math.max(8, searchCalls + readManyCalls)) {
     score -= 6;
     bottlenecks.push("command_heavy");
-    tips.push("High run_command usage; prefer repo_map/search_text/git_status/git_diff when possible.");
+    tips.push(runCommandsCalls
+      ? "High run_command usage; keep grouping independent checks with run_commands/quality_gate and prefer dedicated repo/git tools."
+      : "High run_command usage; group independent checks with run_commands/quality_gate and prefer repo_map/search_text/git_status/git_diff.");
   }
   if (tokensPerCall > 3500) {
     score -= 8;
@@ -2348,6 +2492,12 @@ function dedupe(arr) {
   return [...new Set(arr)];
 }
 
+function boundedNumber(raw, fallback, min, max) {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
 function parseExtraRoots() {
   const json = process.env.AGENT_EXTRA_ROOTS_JSON;
   if (json && json.trim()) {
@@ -2405,7 +2555,7 @@ function trimOutput(s, { tail_lines, head_lines, max_chars }) {
 
 // Fields whose values may carry secrets or large payloads — redact them in the
 // audit log so data/audit.log never stores tokens/keys/file contents/commands.
-const AUDIT_REDACT = /^(content|body|diff|patch|old_text|new_text|command|token|key|secret|password|authorization|auth|api[_-]?key)$/i;
+const AUDIT_REDACT = /^(content|body|diff|patch|old_text|new_text|command|token|approval_token|mcp_auth_token|control_plane_api_key|key|secret|password|authorization|auth|api[_-]?key)$/i;
 
 // Recursively redact sensitive keys at ANY depth (e.g. apply_patch.operations[].content,
 // .edits[].new_text) and truncate long strings, so data/audit.log never stores secrets.
@@ -2557,13 +2707,13 @@ function homeHtml() {
     <div class="panel"><p><strong>Roots</strong></p>${ROOTS.map((r) => `<p><code>${escapeHtml(r)}</code></p>`).join("")}</div>
     <div class="panel"><p><strong>MCP endpoint</strong></p><p><code>http://${HOST}:${PORT}/mcp</code></p></div>
     <div class="panel"><p><strong>Tools</strong></p>
-      <p><strong>Core:</strong> <code>workspace_info, repo_overview, list_files, find_files, read_file, read_many, stat_path, search_text, write_file, replace_in_file, apply_patch, make_dir, move_path, delete_path, run_command, proc_start, proc_list, proc_output, proc_stop, git, git_status, git_diff, list_skills, read_skill, create_skill, delete_skill, ping, save_note, list_notes, checkpoint, resume</code></p>
+      <p><strong>Core:</strong> <code>workspace_info, repo_overview, list_files, find_files, read_file, read_many, stat_path, search_text, write_file, replace_in_file, apply_patch, make_dir, move_path, delete_path, run_command, run_commands, proc_start, proc_list, proc_output, proc_stop, git, git_status, git_diff, list_skills, read_skill, create_skill, delete_skill, ping, save_note, list_notes, checkpoint, resume</code></p>
       <p><strong>Pro repo intel:</strong> <code>workspace_snapshot, workspace_doctor, project_profile, important_files, repo_map, repo_symbols, index_status</code></p>
       <p><strong>v2.2 patch engine:</strong> <code>preview_patch, validate_patch, undo_last_patch</code></p>
       <p><strong>v2.3 test runner:</strong> <code>quality_gate, detect_test_commands, run_tests, run_build, run_lint, run_changed_tests</code></p>
       <p><strong>v2.4 review:</strong> <code>session_report, review_diff, security_scan, todo_scan, change_summary</code></p>
       <p><strong>v2.5 planner:</strong> <code>task_plan, task_state, decision_log</code></p>
-      <p><strong>v2.6 policy:</strong> <code>policy_status, explain_risk, request_approval, approve_request, deny_request</code></p>
+      <p><strong>Policy:</strong> <code>policy_status, explain_risk, request_approval, request_approval_batch, approve_request, deny_request</code></p>
       <p><strong>v2.8 profile:</strong> <code>profile_status, reload_profile</code></p>
     </div>
     <div class="panel"><p><strong>Local dashboard</strong> (this machine only): <code>http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/ui</code></p></div>
@@ -2823,7 +2973,10 @@ async function loadApprovals(){
   try{
     var r=await fetch('/api/approvals',{cache:'no-store'}), d=await r.json(), html='';
     (d.pending||[]).forEach(function(a){
-      html+='<div class="row"><b>'+esc(a.action)+'</b><div class="dim">'+esc(a.reason||'')+' · '+new Date(a.created).toLocaleString()+'</div>'+
+      var actions=Array.isArray(a.actions)?a.actions:[a.action];
+      var label=actions.length>1?'Exact batch ('+actions.length+')':actions[0];
+      var detail=actions.length>1?'<div class="dim">'+actions.map(esc).join('<br>')+'</div>':'';
+      html+='<div class="row"><b>'+esc(label)+'</b>'+detail+'<div class="dim">'+esc(a.reason||'')+' · expires '+new Date(a.expires_at||a.created).toLocaleTimeString()+'</div>'+
         '<button class="btn" data-id="'+esc(a.id)+'" data-action="approve" onclick="decideApprovalFromButton(this)">Approve once</button> '+
         '<button class="btn" data-id="'+esc(a.id)+'" data-action="deny" onclick="decideApprovalFromButton(this)">Deny</button></div>';
     });
@@ -4578,7 +4731,7 @@ const POLICY_RULES = {
 
 const STRICT_MUTATION_TOOLS = new Set([
   "save_note", "checkpoint", "write_file", "replace_in_file", "apply_patch", "make_dir", "move_path", "delete_path",
-  "run_command", "proc_start", "proc_stop", "git", "create_skill", "delete_skill", "undo_last_patch",
+  "run_command", "run_commands", "proc_start", "proc_stop", "git", "create_skill", "delete_skill", "undo_last_patch",
   "quality_gate", "run_tests", "run_build", "run_lint", "run_changed_tests", "task_plan", "task_state", "decision_log"
 ]);
 
@@ -4588,6 +4741,12 @@ function approvalActionForTool(tool, args) {
   if (tool === "run_command" || tool === "proc_start") {
     const command = String(args.command || "");
     return policyCheck(command).needsApproval ? `${tool}:${command}` : null;
+  }
+  if (tool === "run_commands") {
+    const risky = (Array.isArray(args.commands) ? args.commands : [])
+      .filter((item) => policyCheck(String(item?.command || "")).needsApproval)
+      .map((item) => ({ command: String(item.command), cwd: String(item.cwd || "."), shell: item.shell || null }));
+    return risky.length ? `run_commands:${JSON.stringify(risky)}` : null;
   }
   if (tool === "git") {
     const argv = Array.isArray(args.args) ? args.args : [];
@@ -4611,7 +4770,11 @@ async function dashApiApprovals(res) {
       if (!file.endsWith(".json")) continue;
       try {
         const record = JSON.parse(await readFile(path.join(APPROVALS_DIR, file), "utf8"));
-        if (record.status === "pending") records.push(record);
+        if (record.status === "pending" && approvalIsExpired(record)) {
+          record.status = "expired";
+          record.expired_at = isoNow();
+          await writeFile(path.join(APPROVALS_DIR, file), JSON.stringify(record, null, 2), "utf8");
+        } else if (record.status === "pending") records.push(record);
       } catch {}
     }
     records.sort((a, b) => String(b.created).localeCompare(String(a.created)));
@@ -4626,13 +4789,19 @@ async function dashApiApprovalAction(url, res) {
     const parts = url.pathname.split("/").filter(Boolean);
     const id = parts[2] || "";
     const action = parts[3] || "";
-    if (!/^[0-9a-f-]{36}$/i.test(id) || !["approve", "deny"].includes(action)) {
+    if (!APPROVAL_ID_RE.test(id) || !["approve", "deny"].includes(action)) {
       return sendJson(res, 400, { error: "invalid approval action" });
     }
     const fp = path.join(APPROVALS_DIR, `${id}.json`);
     if (!existsSync(fp)) return sendJson(res, 404, { error: "approval not found" });
     const record = JSON.parse(await readFile(fp, "utf8"));
     if (record.status !== "pending") return sendJson(res, 409, { error: `approval is ${record.status}` });
+    if (approvalIsExpired(record)) {
+      record.status = "expired";
+      record.expired_at = isoNow();
+      await writeFile(fp, JSON.stringify(record, null, 2), "utf8");
+      return sendJson(res, 409, { error: "approval is expired" });
+    }
     record.status = action === "approve" ? "approved" : "denied";
     record[`${record.status}_at`] = isoNow();
     record.approved_via = "local_dashboard";
@@ -4645,7 +4814,7 @@ async function dashApiApprovalAction(url, res) {
 }
 
 async function enforceToolPolicy(tool, args) {
-  if (["policy_status", "explain_risk", "request_approval", "approve_request", "deny_request"].includes(tool)) return;
+  if (["policy_status", "explain_risk", "request_approval", "request_approval_batch", "approve_request", "deny_request"].includes(tool)) return;
   if (AGENT_POLICY === "full") return;
   if (AGENT_POLICY === "strict" && STRICT_MUTATION_TOOLS.has(tool)) {
     throw new Error(`Tool "${tool}" is blocked by policy=strict.`);
@@ -4653,13 +4822,36 @@ async function enforceToolPolicy(tool, args) {
   if (AGENT_POLICY !== "balanced") return;
   const action = approvalActionForTool(tool, args);
   if (!action) return;
-  const approval = await checkApprovalExists(action);
-  if (!approval) {
-    throw new Error(`Approval required. Call request_approval with action=${JSON.stringify(action)}, then have the local operator approve it.`);
+  const previous = approvalLock;
+  let release;
+  approvalLock = new Promise((resolve) => { release = resolve; });
+  await previous;
+  try {
+    const approval = await checkApprovalExists(action);
+    if (!approval) {
+      throw new Error(`Approval required. Call request_approval with action=${JSON.stringify(action)}, then have the local operator approve it.`);
+    }
+    const consumed = new Set(Array.isArray(approval.consumed_actions) ? approval.consumed_actions : []);
+    consumed.add(action);
+    approval.consumed_actions = [...consumed];
+    const actions = approvalActions(approval);
+    if (actions.every((candidate) => consumed.has(candidate))) {
+      approval.status = "consumed";
+      approval.consumed_at = isoNow();
+    }
+    await writeFile(path.join(APPROVALS_DIR, `${approval.id}.json`), JSON.stringify(approval, null, 2), "utf8");
+  } finally {
+    release();
   }
-  approval.status = "consumed";
-  approval.consumed_at = isoNow();
-  await writeFile(path.join(APPROVALS_DIR, `${approval.id}.json`), JSON.stringify(approval, null, 2), "utf8");
+}
+
+function approvalActions(record) {
+  if (Array.isArray(record?.actions)) return record.actions.map(String);
+  return record?.action ? [String(record.action)] : [];
+}
+
+function approvalIsExpired(record) {
+  return Boolean(record?.expires_at && Date.parse(record.expires_at) <= Date.now());
 }
 
 function classifyAction(action) {
@@ -4712,7 +4904,15 @@ async function checkApprovalExists(action) {
       if (!f.endsWith(".json")) continue;
       try {
         const rec = JSON.parse(await readFile(path.join(APPROVALS_DIR, f), "utf8"));
-        if (rec.status === "approved" && rec.action === action) return rec;
+        if (rec.status !== "approved") continue;
+        if (approvalIsExpired(rec)) {
+          rec.status = "expired";
+          rec.expired_at = isoNow();
+          await writeFile(path.join(APPROVALS_DIR, f), JSON.stringify(rec, null, 2), "utf8");
+          continue;
+        }
+        const consumed = new Set(Array.isArray(rec.consumed_actions) ? rec.consumed_actions : []);
+        if (approvalActions(rec).includes(action) && !consumed.has(action)) return rec;
       } catch { /* skip */ }
     }
   } catch { /* dir may not exist */ }
@@ -4735,7 +4935,9 @@ function registerPolicyTools(mcp) {
         mode: MODE,
         description: rules.description,
         allowed: AGENT_POLICY === "full" ? ["*"] : AGENT_POLICY === "balanced" ? ["read", "write", "edit", "test", "build"] : ["read", "search", "analyze"],
-        needs_approval: AGENT_POLICY === "balanced" ? ["delete_path", "npm/pip install", "curl/wget", "git push/fetch/pull"] : [],
+        needs_approval: AGENT_POLICY === "balanced" ? ["delete_path", "npm/pip install", "curl/wget", "git push/fetch/pull", "risky run_commands batch"] : [],
+        approval_options: AGENT_POLICY === "balanced" ? ["one exact action", "2-20 exact actions in one expiring batch"] : [],
+        approval_ttl_minutes: APPROVAL_TTL_MINUTES,
         blocked: AGENT_POLICY === "strict" ? ["all writes", "installs", "network", "delete", "git mutations"] : []
       });
     }
@@ -4781,7 +4983,7 @@ function registerPolicyTools(mcp) {
     "request_approval",
     {
       title: "Request approval",
-      description: "Write a pending approval request. Returns an id. The user must call approve_request(id) before the action can proceed.",
+      description: "Create an expiring pending request for one exact action. The local operator should approve it in the dashboard; MCP token approval is an optional fallback.",
       inputSchema: {
         action: z.string().min(1),
         reason: z.string().min(1).describe("Why this action is needed.")
@@ -4789,10 +4991,65 @@ function registerPolicyTools(mcp) {
     },
     async ({ action, reason }) => {
       const id = randomUUID();
-      const record = { id, action, reason, status: "pending", created: isoNow() };
+      const created = isoNow();
+      const record = {
+        id,
+        action,
+        actions: [action],
+        consumed_actions: [],
+        reason,
+        status: "pending",
+        created,
+        expires_at: new Date(Date.now() + APPROVAL_TTL_MINUTES * 60_000).toISOString()
+      };
       await mkdir(APPROVALS_DIR, { recursive: true });
       await writeFile(path.join(APPROVALS_DIR, `${id}.json`), JSON.stringify(record, null, 2), "utf8");
-      return jsonResult({ id, status: "pending", message: `Approval request created. Ask the user to call approve_request with id="${id}" to allow this action.`, action, reason });
+      return jsonResult({
+        id,
+        status: "pending",
+        expires_at: record.expires_at,
+        message: "Approval request created. Ask the local operator to approve it in the dashboard.",
+        action,
+        reason
+      });
+    }
+  );
+
+  reg(
+    mcp,
+    "request_approval_batch",
+    {
+      title: "Request exact batch approval",
+      description: "Request one local decision for 2-20 exact risky actions. Each listed action can be consumed once before expiry; wildcards and implicit extra permissions are not supported.",
+      inputSchema: {
+        actions: z.array(z.string().min(1).max(4000)).min(2).max(20),
+        reason: z.string().min(1).max(2000).describe("Why this exact action batch is needed."),
+        expires_in_minutes: z.number().int().min(1).max(30).optional()
+      }
+    },
+    async ({ actions, reason, expires_in_minutes = APPROVAL_TTL_MINUTES }) => {
+      const exactActions = dedupe(actions.map((action) => action.trim()).filter(Boolean));
+      if (exactActions.length < 2) throw new Error("Provide at least two distinct exact actions.");
+      const id = randomUUID();
+      const record = {
+        id,
+        action: `batch:${exactActions.length}`,
+        actions: exactActions,
+        consumed_actions: [],
+        reason,
+        status: "pending",
+        created: isoNow(),
+        expires_at: new Date(Date.now() + expires_in_minutes * 60_000).toISOString()
+      };
+      await mkdir(APPROVALS_DIR, { recursive: true });
+      await writeFile(path.join(APPROVALS_DIR, `${id}.json`), JSON.stringify(record, null, 2), "utf8");
+      return jsonResult({
+        id,
+        status: "pending",
+        actions: exactActions,
+        expires_at: record.expires_at,
+        message: "Exact batch approval created. Ask the local operator to review and approve it in the dashboard."
+      });
     }
   );
 
@@ -4807,11 +5064,15 @@ function registerPolicyTools(mcp) {
     async ({ id, approval_token }) => {
       if (!APPROVAL_TOKEN) throw new Error("MCP approval is disabled. Set AGENT_APPROVAL_TOKEN locally or approve out of band.");
       if (!safeEqual(approval_token, APPROVAL_TOKEN)) throw new Error("Invalid local operator approval token.");
+      if (!APPROVAL_ID_RE.test(id)) throw new Error("Invalid approval id.");
       const fp = path.join(APPROVALS_DIR, `${id}.json`);
       if (!existsSync(fp)) throw new Error(`No approval request with id ${id}`);
       const rec = JSON.parse(await readFile(fp, "utf8"));
+      if (rec.status !== "pending") throw new Error(`Approval is ${rec.status}; only pending requests can be approved.`);
+      if (approvalIsExpired(rec)) throw new Error("Approval request is expired.");
       rec.status = "approved";
       rec.approved_at = isoNow();
+      rec.approved_via = "mcp_operator_token";
       await writeFile(fp, JSON.stringify(rec, null, 2), "utf8");
       return jsonResult({ ok: true, id, action: rec.action, status: "approved" });
     }
@@ -4828,9 +5089,12 @@ function registerPolicyTools(mcp) {
     async ({ id, approval_token }) => {
       if (!APPROVAL_TOKEN) throw new Error("MCP denial is disabled. Set AGENT_APPROVAL_TOKEN locally or deny out of band.");
       if (!safeEqual(approval_token, APPROVAL_TOKEN)) throw new Error("Invalid local operator approval token.");
+      if (!APPROVAL_ID_RE.test(id)) throw new Error("Invalid approval id.");
       const fp = path.join(APPROVALS_DIR, `${id}.json`);
       if (!existsSync(fp)) throw new Error(`No approval request with id ${id}`);
       const rec = JSON.parse(await readFile(fp, "utf8"));
+      if (rec.status !== "pending") throw new Error(`Approval is ${rec.status}; only pending requests can be denied.`);
+      if (approvalIsExpired(rec)) throw new Error("Approval request is expired.");
       rec.status = "denied";
       rec.denied_at = isoNow();
       await writeFile(fp, JSON.stringify(rec, null, 2), "utf8");

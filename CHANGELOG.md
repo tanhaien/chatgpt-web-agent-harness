@@ -3,6 +3,37 @@
 All notable changes to Local Coding Agent are documented here. The project
 follows [Semantic Versioning](https://semver.org/).
 
+## [4.3.0-pro] - 2026-07-01
+
+### Added
+
+- `run_commands` executes up to 12 bounded commands in one MCP round-trip,
+  sequentially by default or with explicit bounded parallelism.
+- `request_approval_batch` lets the local operator approve 2-20 exact actions
+  in one expiring request. Every action is consumable once; wildcard grants are
+  intentionally unsupported.
+- `read_many` now accepts targeted line-range requests, bounded concurrency,
+  up to 100 files, and a configurable total response cap.
+- Health responses expose the server PID, policy, config id, and dashboard port
+  so launchers can identify the exact process/configuration they manage.
+
+### Fixed
+
+- MCP token approvals now reject invalid IDs, expired requests, and attempts to
+  approve or deny a request that is no longer pending.
+- Approval check-and-consume is serialized in-process so concurrent MCP calls
+  cannot reuse the same one-time grant.
+- Audit argument redaction now covers `approval_token` and related explicit
+  credential field names.
+- macOS root checks now validate canonical paths first, avoiding false denials
+  on case-insensitive volumes while preserving symlink escape protection.
+- Windows and POSIX launchers restart when startup configuration changes and
+  stop only the server PID they verified, replacing broad `server.mjs` kills.
+- The POSIX launcher now documents the actual semicolon format for
+  `AGENT_EXTRA_ROOTS`; JSON remains preferred for ambiguous paths.
+- CI parses PowerShell and Bash launchers in addition to exercising the server
+  matrix on Windows, macOS, and Ubuntu.
+
 ## [4.2.0-pro] - 2026-06-30
 
 Major Pro workflow upgrade focused on day-to-day work quality, not marketing.
@@ -183,6 +214,7 @@ Windows tray workflow.
 - Dashboard port `8788` remains reserved by the tunnel client; use the default
   dashboard port `8790`.
 
+[4.3.0-pro]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.3.0-pro
 [4.2.0-pro]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.2.0-pro
 [4.1.1-pro]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.1.1-pro
 [4.1.0]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.1.0

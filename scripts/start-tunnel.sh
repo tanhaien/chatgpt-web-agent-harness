@@ -21,7 +21,7 @@ PROFILE_NAME="${PROFILE_NAME:-local-coding-agent}"
 PROFILE_DIR="${PROFILE_DIR:-$REPO_ROOT/tools/profiles}"
 AGENT_MODE="${AGENT_MODE:-safe}"      # "safe" (recommended) or "full"
 AGENT_POLICY="${AGENT_POLICY:-balanced}" # strict, balanced, or full
-EXTRA_ROOTS="${AGENT_EXTRA_ROOTS:-}"  # extra folders, ':' or ';' separated
+EXTRA_ROOTS="${AGENT_EXTRA_ROOTS:-}"  # extra folders, semicolon-separated
 AUTH_TOKEN="${MCP_AUTH_TOKEN:-}"      # optional bearer token
 DASHBOARD_PORT="${DASHBOARD_PORT:-8790}"  # do NOT use 8788 (tunnel uses it)
 PORT="${PORT:-8787}"
@@ -39,19 +39,58 @@ get_field() { # $1 = json field; reads health, prints value or empty
     process.stdin.on("end",()=>{try{process.stdout.write(String(JSON.parse(s)["'"$1"'"]??""))}catch{process.stdout.write("")}});' 2>/dev/null || true
 }
 
+stop_managed_server() {
+  local pid="${1:-}"
+  if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    local matches
+    matches="$(pgrep -f "$SERVER_DIR/server.mjs" 2>/dev/null || true)"
+    [ "$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')" = "1" ] || {
+      echo "ERROR: active MCP server PID could not be identified safely; stop the intended server and retry." >&2
+      exit 1
+    }
+    pid="$matches"
+  fi
+
+  local command_line
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command_line" in
+    *"$SERVER_DIR/server.mjs"*) ;;
+    *) echo "ERROR: PID $pid is not this Local Coding Agent server; refusing to stop it." >&2; exit 1 ;;
+  esac
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
 [ -n "$AGENT_WORKSPACE" ] || { echo "ERROR: set AGENT_WORKSPACE (top of script or env var)." >&2; exit 1; }
 [ -d "$AGENT_WORKSPACE" ] || { echo "ERROR: workspace does not exist: $AGENT_WORKSPACE" >&2; exit 1; }
 [ -x "$TUNNEL_BIN" ] || { echo "ERROR: tunnel client not found/executable: $TUNNEL_BIN" >&2; exit 1; }
 
+AUTH_ENABLED=0
+[ -n "$AUTH_TOKEN" ] && AUTH_ENABLED=1
+CONFIG_ID="$(
+  LCA_WORKSPACE="$AGENT_WORKSPACE" LCA_MODE="$AGENT_MODE" LCA_POLICY="$AGENT_POLICY" \
+  LCA_EXTRA_ROOTS="$EXTRA_ROOTS" LCA_AUTH_ENABLED="$AUTH_ENABLED" LCA_PORT="$PORT" \
+  LCA_DASHBOARD_PORT="$DASHBOARD_PORT" node -e '
+    const c=require("node:crypto");
+    const keys=["LCA_WORKSPACE","LCA_MODE","LCA_POLICY","LCA_EXTRA_ROOTS","LCA_AUTH_ENABLED","LCA_PORT","LCA_DASHBOARD_PORT"];
+    const value=JSON.stringify(Object.fromEntries(keys.map(k=>[k,process.env[k]||""])));
+    process.stdout.write(c.createHash("sha256").update(value).digest("hex").slice(0,16));'
+)"
+
 # First-run install.
 [ -d "$SERVER_DIR/node_modules" ] || { echo "Installing server dependencies..."; (cd "$SERVER_DIR" && npm install); }
 
-# Restart server if running with a different workspace/mode.
+# Restart only the server behind this health endpoint when startup config changed.
 cur_ws="$(get_field workspace)"
-cur_mode="$(get_field mode)"
-if [ -n "$cur_ws" ] && { [ "$cur_ws" != "$AGENT_WORKSPACE" ] || [ "$cur_mode" != "$AGENT_MODE" ]; }; then
+cur_config="$(get_field config_id)"
+cur_pid="$(get_field pid)"
+if [ -n "$cur_ws" ] && [ "$cur_config" != "$CONFIG_ID" ]; then
   echo "Restarting MCP server with the requested config..."
-  pkill -f "server.mjs" 2>/dev/null || true
+  stop_managed_server "$cur_pid"
   sleep 1
 fi
 
@@ -59,6 +98,7 @@ if ! curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
   echo "Starting MCP server (workspace=$AGENT_WORKSPACE mode=$AGENT_MODE)..."
   PORT="$PORT" AGENT_HOST=127.0.0.1 AGENT_WORKSPACE="$AGENT_WORKSPACE" AGENT_MODE="$AGENT_MODE" \
   AGENT_POLICY="$AGENT_POLICY" \
+  AGENT_CONFIG_ID="$CONFIG_ID" \
   AGENT_EXTRA_ROOTS="$EXTRA_ROOTS" MCP_AUTH_TOKEN="$AUTH_TOKEN" DASHBOARD_PORT="$DASHBOARD_PORT" \
     nohup node "$SERVER_DIR/server.mjs" >"$SERVER_DIR/mcp.log" 2>"$SERVER_DIR/mcp.err.log" &
   sleep 2

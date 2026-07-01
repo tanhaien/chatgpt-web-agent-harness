@@ -13,9 +13,9 @@ ChatGPT sessions; it is a normal MCP connector you authorize.
 | Group | Tools |
 |-------|-------|
 | Info | `workspace_info`, `ping` |
-| Read | `repo_overview`, `list_files`, `find_files`, `read_file`, `read_many`, `stat_path`, `search_text` (ripgrep/git, with context + glob) |
+| Read | `repo_overview`, `list_files`, `find_files`, `read_file`, `read_many` (concurrent + line ranges), `stat_path`, `search_text` (ripgrep/git, with context + glob) |
 | Write | `write_file`, `replace_in_file`, `apply_patch`, `make_dir`, `move_path`, `delete_path` |
-| Execute | `run_command` (cmd/powershell/bash/sh/zsh) |
+| Execute | `run_command`, `run_commands` (bounded batch; cmd/powershell/bash/sh/zsh) |
 | Processes | `proc_start`, `proc_list`, `proc_output`, `proc_stop` |
 | Git | `git` |
 | Pro | `workspace_snapshot`, `workspace_doctor`, `quality_gate`, `session_report` |
@@ -51,6 +51,8 @@ npm start
 | `MCP_AUTH_TOKEN` | _(empty)_ | If set, every `/mcp` request must send `Authorization: Bearer <token>`. |
 | `MCP_ALLOWED_ORIGINS` | _(empty)_ | Trusted browser origins for `/mcp`. Empty rejects browser-origin MCP calls. |
 | `AGENT_APPROVAL_TOKEN` | _(empty)_ | Optional secret for MCP-based approval tools. Prefer dashboard approvals. |
+| `AGENT_APPROVAL_TTL_MINUTES` | `10` | Exact approval expiry, clamped to 1-30 minutes. |
+| `AGENT_MAX_BATCH_READ_CHARS` | `500000` | Combined text cap for one `read_many` response. |
 | `DASHBOARD_PORT` | `8790` | Local-only metrics dashboard. `0` disables it. (Avoid 8788 — the OpenAI tunnel uses it.) |
 | `AGENT_READ_DEFAULT` | `30000` | Default chars `read_file` returns (raise per-call via `max_chars`). Keeps payloads + context small. |
 | `AGENT_CMD_OUTPUT_DEFAULT` | `20000` | Default chars of command output returned (use `tail_lines`/`head_lines`/`max_output_chars`). |

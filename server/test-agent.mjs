@@ -44,9 +44,22 @@ await call("stat_path", { path: "demo/hello.js" });
 await call("search_text", { query: "greetings", path: "demo" });
 await call("list_files", { path: "demo", recursive: true });
 await call("read_many", { paths: ["demo/hello.js", "demo/pkg/util.js", "demo/does-not-exist.js"] });
+await call("read_many", {
+  requests: [
+    { path: "demo/hello.js", start_line: 1, line_count: 1, max_chars: 500 },
+    { path: "demo/pkg/util.js", max_chars: 500 }
+  ],
+  concurrency: 2
+});
 await call("repo_overview", { path: ".", depth: 3 });
 await call("move_path", { from: "demo/newdir", to: "demo/renamed" });
 await call("run_command", { command: "node demo/hello.js", timeout_ms: 10000 });
+await call("run_commands", {
+  commands: [
+    { command: "node --version", timeout_ms: 10000 },
+    { command: "git --version", timeout_ms: 10000 }
+  ]
+});
 
 // background process: short ticker
 const startText = await call("proc_start", {

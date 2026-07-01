@@ -37,6 +37,16 @@ async function call(name, args) {
 const info = JSON.parse((await call("workspace_info", {})).text);
 const root = info.primary_root;
 
+// Default macOS volumes are commonly case-insensitive. A differently-cased
+// absolute path to the same root must remain inside the root after canonicalization.
+if (process.platform === "darwin") {
+  const variant = root.replace(/[A-Za-z]/, (ch) => ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase());
+  if (variant !== root && existsSync(variant)) {
+    const caseVariant = await call("stat_path", { path: variant });
+    ok(!caseVariant.result.isError, "case-insensitive macOS root path is accepted", caseVariant.text);
+  }
+}
+
 await rm(root, { recursive: true, force: true });
 await mkdir(root, { recursive: true });
 

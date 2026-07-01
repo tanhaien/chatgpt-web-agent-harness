@@ -38,6 +38,17 @@ jobs:
           node --check test-pro.mjs
           node --check test-hardening.mjs
           node --check ../evals/run.mjs
+      - name: Parse PowerShell launchers
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw ../install.ps1))
+          [void][scriptblock]::Create((Get-Content -Raw ../scripts/start-tunnel.ps1))
+        working-directory: server
+      - name: Parse Bash launchers
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          bash -n install.sh
+          bash -n scripts/start-tunnel.sh
       - name: Run MCP and runtime-security tests
         working-directory: server
         run: |

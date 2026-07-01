@@ -59,9 +59,10 @@ cd local-coding-agent && bash install.sh
 ### Features
 
 - **50+ coding tools** over MCP: `repo_overview`, `list_files`, `find_files`,
-  `read_file`, `read_many` (batch read), `search_text` (ripgrep/git, with
+  `read_file`, `read_many` (concurrent/ranged batch read), `search_text` (ripgrep/git, with
   context + glob), `write_file`, `replace_in_file`, `apply_patch` (multi-file),
-  `make_dir`, `move_path`, `delete_path`, `run_command` (cmd/powershell/bash),
+  `make_dir`, `move_path`, `delete_path`, `run_command`, `run_commands`
+  (bounded command batch; cmd/powershell/bash),
   background processes (`proc_start/list/output/stop`), git
   (`git`, `git_status`, `git_diff`), and notes.
 - **Speed-tuned**: compact JSON, relative paths, batch reads, one-call repo map —
@@ -76,6 +77,8 @@ cd local-coding-agent && bash install.sh
 - **Safety layers**: loopback-only bind, root confinement, `safe`/`full` command
   modes, `strict`/`balanced`/`full` policy enforcement, local approve-once
   dashboard queue, optional bearer token, browser-origin rejection, and audit log.
+- **Exact batch approvals**: group 2-20 known risky actions into one expiring
+  local decision; each exact action is consumable once and wildcards are not allowed.
 - **v4 cross-platform runtime**: Windows path checks are case-insensitive,
   macOS/Linux use `bash` or `sh` by default, and process-tree cleanup works on
   Windows and POSIX process groups.
@@ -347,6 +350,8 @@ roots**) → **Save settings → Start** (it restarts with the new path). Re-run
 | `MCP_AUTH_TOKEN` | _(empty)_ | If set, `/mcp` requires `Authorization: Bearer <token>`. |
 | `MCP_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated trusted browser origins for `/mcp`. Empty rejects browser-origin MCP calls. |
 | `AGENT_APPROVAL_TOKEN` | _(empty)_ | Optional secret for MCP-based approval tools. Prefer the local dashboard. |
+| `AGENT_APPROVAL_TTL_MINUTES` | `10` | Expiry for exact approval requests; clamped to 1-30 minutes. |
+| `AGENT_MAX_BATCH_READ_CHARS` | `500000` | Combined text cap for one `read_many` response. |
 | `DASHBOARD_PORT` | `8790` | Local dashboard (`0` disables). Avoid `8788` (the tunnel uses it). |
 
 When `MCP_AUTH_TOKEN` is set, the Windows tray app and both launcher scripts
@@ -404,15 +409,17 @@ cd local-coding-agent && bash install.sh
 ### Tính năng
 
 - **Hơn 50 tool coding** qua MCP: `repo_overview`, `list_files`, `find_files`,
-  `read_file`, `read_many` (đọc nhiều file 1 lần), `search_text` (ripgrep/git,
+  `read_file`, `read_many` (đọc song song/theo đoạn), `search_text` (ripgrep/git,
   kèm context + glob), `write_file`, `replace_in_file`, `apply_patch` (sửa nhiều
-  file), `make_dir`, `move_path`, `delete_path`, `run_command`
-  (cmd/powershell/bash/sh/zsh), tiến trình nền (`proc_start/list/output/stop`), `git`,
+  file), `make_dir`, `move_path`, `delete_path`, `run_command`, `run_commands`
+  (batch lệnh có giới hạn; cmd/powershell/bash/sh/zsh), tiến trình nền (`proc_start/list/output/stop`), `git`,
   và ghi chú.
 - **Tối ưu tốc độ**: JSON gọn, đường dẫn tương đối, đọc theo lô, map repo trong 1
   lần gọi — giảm round-trip qua tunnel.
 - **Nhiều lớp an toàn**: chỉ bind loopback, giới hạn thư mục gốc, chế độ
   `safe`/`full`, blocklist lệnh thảm hoạ, token tuỳ chọn, audit log.
+- **Duyệt batch chính xác**: gom 2-20 hành động rủi ro đã biết vào một yêu cầu
+  cục bộ có hạn dùng; mỗi hành động chỉ dùng một lần và không hỗ trợ wildcard.
 - **Runtime đa nền tảng v4**: so sánh path không phân biệt hoa/thường trên
   Windows, tự chọn `bash`/`sh` trên macOS/Linux và dọn cả cây tiến trình đúng
   cách trên Windows lẫn POSIX.
@@ -672,8 +679,11 @@ Dashboard local sẽ ghi nhận các tool call. Sau khi đổi root, gọi lại
 | `AGENT_EXTRA_ROOTS` | _(trống)_ | Thư mục thêm, ngăn cách bằng `;`. |
 | `AGENT_EXTRA_ROOTS_JSON` | _(trống)_ | Mảng JSON chứa các thư mục thêm; nên dùng khi path có ký tự phân cách. |
 | `AGENT_MODE` | `safe` | `safe` = chặn cẩn trọng; `full` = toàn quyền trong root. |
+| `AGENT_POLICY` | `balanced` | `strict` = chỉ đọc; `balanced` = duyệt hành động rủi ro; `full` = bỏ cổng duyệt policy. |
 | `AGENT_ALLOW_DANGEROUS` | _(không đặt)_ | `1` cho phép lệnh hệ thống thảm hoạ. Nên để trống. |
 | `MCP_AUTH_TOKEN` | _(trống)_ | Nếu đặt, `/mcp` yêu cầu `Authorization: Bearer <token>`. |
+| `AGENT_APPROVAL_TTL_MINUTES` | `10` | Hạn dùng của yêu cầu duyệt chính xác, giới hạn 1-30 phút. |
+| `AGENT_MAX_BATCH_READ_CHARS` | `500000` | Tổng ký tự tối đa trả về từ một lần `read_many`. |
 | `DASHBOARD_PORT` | `8790` | Dashboard cục bộ (`0` để tắt). Tránh `8788` (tunnel dùng). |
 
 Khi đặt `MCP_AUTH_TOKEN`, app tray Windows và cả hai launcher cũng truyền

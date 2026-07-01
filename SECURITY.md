@@ -29,6 +29,12 @@ on that machine. Read this before using it.
   deletes, installs/network calls, mutating git, risky commands, risky
   background processes, and destructive patch operations require one-time local
   approval in the dashboard.
+- Exact batch approvals may group 2-20 explicitly listed actions into one local
+  decision. They expire within 1-30 minutes, each action is consumable once,
+  and wildcard or implicit grants are not supported.
+- `run_commands` is only a transport optimization: every command still passes
+  the same mode, policy, root, timeout, and catastrophic-command checks as
+  `run_command`.
 - Browser-origin `/mcp` requests are rejected unless explicitly listed in
   `MCP_ALLOWED_ORIGINS`.
 - Bearer tokens are accepted only through `Authorization: Bearer <token>`, not
@@ -70,6 +76,9 @@ trước khi dùng.
 ## Mặc định an toàn
 
 - Mặc định `AGENT_MODE=safe`.
+- `AGENT_POLICY=balanced` cho phép sửa/test thông thường; hành động rủi ro vẫn
+  cần duyệt cục bộ. Batch approval chỉ chứa các hành động chính xác, có hạn dùng
+  và mỗi hành động chỉ được dùng một lần; đây không phải quyền wildcard.
 - Lệnh hệ thống thảm hoạ luôn bị chặn kể cả ở `full` mode (trừ khi
   `AGENT_ALLOW_DANGEROUS=1`).
 - Server chỉ nghe loopback.

@@ -3,7 +3,7 @@
 
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -34,7 +34,7 @@ async function waitFor(url) {
   throw new Error(`Server did not become ready: ${url}`);
 }
 
-async function startServer(workspace, { port, dashboardPort = 0, policy = "strict", auth = "", maxBody = "1048576" }) {
+async function startServer(workspace, { port, dashboardPort = 0, policy = "strict", auth = "", approvalToken = "", maxBody = "1048576" }) {
   await mkdir(workspace, { recursive: true });
   const child = spawn(process.execPath, [SERVER], {
     cwd: path.dirname(SERVER),
@@ -47,6 +47,7 @@ async function startServer(workspace, { port, dashboardPort = 0, policy = "stric
       AGENT_POLICY: policy,
       AGENT_EXTRA_ROOTS_JSON: "[]",
       MCP_AUTH_TOKEN: auth,
+      AGENT_APPROVAL_TOKEN: approvalToken,
       AGENT_MAX_BODY_BYTES: maxBody
     },
     windowsHide: true,
@@ -114,6 +115,7 @@ try {
   const client = await connect(19001);
   check("strict policy blocks write_file", (await call(client, "write_file", { path: "blocked.txt", content: "x" })).isError);
   check("strict policy blocks run_command", (await call(client, "run_command", { command: "node --version" })).isError);
+  check("strict policy blocks run_commands", (await call(client, "run_commands", { commands: [{ command: "node --version" }] })).isError);
   await call(client, "workspace_info");
   await client.close();
 
@@ -130,17 +132,61 @@ try {
   await call(balanced, "write_file", { path: "victim.txt", content: "x" });
   const blockedDelete = await call(balanced, "delete_path", { path: "victim.txt" });
   check("balanced policy blocks delete before approval", blockedDelete.isError && blockedDelete.text.includes("Approval required"));
+  const blockedRiskyBatch = await call(balanced, "run_commands", {
+    commands: [{ command: "curl -o downloaded.txt https://example.invalid" }]
+  });
+  check("balanced policy does not let run_commands bypass risky-command approval", blockedRiskyBatch.isError && blockedRiskyBatch.text.includes("Approval required"));
   const request = JSON.parse((await call(balanced, "request_approval", { action: "delete_path:victim.txt", reason: "hardening regression" })).text);
   const dashboardDecision = await fetch(`http://127.0.0.1:19007/api/approvals/${request.id}/approve`, { method: "POST" });
   check("local dashboard approves pending action", dashboardDecision.ok);
   check("approved action executes once", !(await call(balanced, "delete_path", { path: "victim.txt" })).isError);
   await call(balanced, "write_file", { path: "victim.txt", content: "x" });
   check("consumed approval cannot be replayed", (await call(balanced, "delete_path", { path: "victim.txt" })).isError);
+
+  await call(balanced, "write_file", { path: "batch-a.txt", content: "a" });
+  await call(balanced, "write_file", { path: "batch-b.txt", content: "b" });
+  const batchRequest = JSON.parse((await call(balanced, "request_approval_batch", {
+    actions: ["delete_path:batch-a.txt", "delete_path:batch-b.txt"],
+    reason: "hardening exact batch regression",
+    expires_in_minutes: 5
+  })).text);
+  const batchDecision = await fetch(`http://127.0.0.1:19007/api/approvals/${batchRequest.id}/approve`, { method: "POST" });
+  check("dashboard approves exact action batch", batchDecision.ok);
+  check("batch approval consumes first exact action", !(await call(balanced, "delete_path", { path: "batch-a.txt" })).isError);
+  check("batch approval consumes second exact action", !(await call(balanced, "delete_path", { path: "batch-b.txt" })).isError);
+  check("consumed batch action cannot be replayed", (await call(balanced, "delete_path", { path: "batch-a.txt" })).isError);
+
+  const concurrentAction = "run_command:git fetch --dry-run";
+  const concurrentRequest = JSON.parse((await call(balanced, "request_approval", {
+    action: concurrentAction,
+    reason: "concurrent consume regression"
+  })).text);
+  await fetch(`http://127.0.0.1:19007/api/approvals/${concurrentRequest.id}/approve`, { method: "POST" });
+  const concurrentResults = await Promise.all([
+    call(balanced, "run_command", { command: "git fetch --dry-run" }),
+    call(balanced, "run_command", { command: "git fetch --dry-run" })
+  ]);
+  check("one-time approval remains one-time under concurrent calls", concurrentResults.filter((result) => result.isError).length === 1);
   const evilDashboard = await fetch(`http://127.0.0.1:19007/api/approvals/${request.id}/deny`, { method: "POST", headers: { Origin: "https://evil.example" } });
   check("dashboard rejects cross-origin decisions", evilDashboard.status === 403);
   await balanced.close();
   await stopServer(server);
   server = null;
+
+  // MCP-token decisions must not revive consumed/denied requests or accept path-like ids.
+  console.log("\n[phase] approval replay and id validation");
+  const approvalSecret = `LCA_APPROVAL_SECRET_${Date.now()}`;
+  server = await startServer(path.join(base, "approval-token"), { port: 19008, policy: "balanced", approvalToken: approvalSecret });
+  const tokenClient = await connect(19008);
+  const tokenRequest = JSON.parse((await call(tokenClient, "request_approval", { action: "delete_path:token.txt", reason: "token replay regression" })).text);
+  check("MCP operator token approves a pending request", !(await call(tokenClient, "approve_request", { id: tokenRequest.id, approval_token: approvalSecret })).isError);
+  check("MCP operator token cannot approve the same request twice", (await call(tokenClient, "approve_request", { id: tokenRequest.id, approval_token: approvalSecret })).isError);
+  check("MCP approval rejects path-like ids", (await call(tokenClient, "approve_request", { id: "../outside", approval_token: approvalSecret })).isError);
+  await tokenClient.close();
+  await stopServer(server);
+  server = null;
+  const approvalAudit = await readFile(path.resolve("data", "audit.log"), "utf8").catch(() => "");
+  check("audit log redacts approval_token", !approvalAudit.includes(approvalSecret));
 
   // Query-string tokens must not authenticate.
   console.log("\n[phase] header-only bearer authentication");
