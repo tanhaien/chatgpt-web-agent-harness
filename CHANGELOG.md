@@ -30,6 +30,9 @@ follows [Semantic Versioning](https://semver.org/).
   diagnose office-network blocks by checking DNS, TCP 443, TLS, HTTPS, local MCP
   endpoints, proxy environment variables, and optional tunnel-client logs with
   secret redaction.
+- README was rewritten as a mirrored English/Vietnamese onboarding guide so both
+  languages have the same AI-assisted setup, CLI, tray app, tunnel, diagnostics,
+  safety, troubleshooting, and development flow.
 
 ### Fixed
 
