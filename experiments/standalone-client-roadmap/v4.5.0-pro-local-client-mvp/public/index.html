@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Agent Client MVP</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f14;
+      --panel: #111821;
+      --panel-2: #0f151d;
+      --text: #e5edf7;
+      --muted: #8ea0b8;
+      --line: #223044;
+      --accent: #28d7bd;
+      --warn: #f7b955;
+      --bad: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #0d131b;
+    }
+    h1 { margin: 0; font-size: 18px; }
+    main {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr) 420px;
+      min-height: calc(100vh - 58px);
+    }
+    section {
+      border-right: 1px solid var(--line);
+      padding: 14px;
+      min-width: 0;
+    }
+    section:last-child { border-right: 0; }
+    label { display: block; color: var(--muted); font-size: 12px; margin: 12px 0 6px; }
+    input, textarea, select {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px 10px;
+      font: inherit;
+    }
+    textarea { min-height: 140px; resize: vertical; }
+    button {
+      background: var(--accent);
+      color: #04110f;
+      border: 0;
+      border-radius: 6px;
+      padding: 9px 12px;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button.secondary {
+      background: #1b2532;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row > * { flex: 1; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 12px;
+    }
+    .ok { color: var(--accent); }
+    .bad { color: var(--bad); }
+    .muted { color: var(--muted); }
+    .box {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      margin-top: 10px;
+    }
+    .tools {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: calc(100vh - 260px);
+      overflow: auto;
+    }
+    .tool {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px;
+    }
+    .tool b { display: block; }
+    .chat {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      height: calc(100vh - 86px);
+    }
+    .messages {
+      flex: 1;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-right: 4px;
+    }
+    .msg {
+      white-space: pre-wrap;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px;
+    }
+    .msg.user { border-color: #2c6a7a; }
+    .msg.agent { border-color: #246b5e; }
+    .timeline {
+      max-height: calc(100vh - 120px);
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin: 8px 0 0;
+      color: #c9d7e8;
+      font-size: 12px;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      section { border-right: 0; border-bottom: 1px solid var(--line); }
+      .chat { height: auto; min-height: 520px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Local Agent Client MVP</h1>
+    <span class="pill" id="health">checking...</span>
+  </header>
+  <main>
+    <section>
+      <h2>Connection</h2>
+      <label>MCP endpoint</label>
+      <input id="endpoint" value="http://127.0.0.1:8787/mcp" />
+      <button id="connect">Connect MCP</button>
+      <button class="secondary" id="refresh">Refresh Tools</button>
+      <div class="box">
+        <div><b>Status</b></div>
+        <div id="status" class="muted">Not connected yet.</div>
+      </div>
+      <h2>Tools</h2>
+      <div class="tools" id="tools"></div>
+    </section>
+    <section>
+      <div class="chat">
+        <div class="row">
+          <div>
+            <label>Model</label>
+            <input id="model" value="gpt-4.1-mini" />
+          </div>
+          <div>
+            <label>Mode</label>
+            <select id="mode">
+              <option value="chat">Chat + tools</option>
+            </select>
+          </div>
+        </div>
+        <div class="messages" id="messages"></div>
+        <div>
+          <label>Ask the agent</label>
+          <textarea id="prompt" placeholder="Example: Call workspace_info, then summarize this workspace."></textarea>
+          <button id="send">Send</button>
+        </div>
+      </div>
+    </section>
+    <section>
+      <h2>Tool Timeline</h2>
+      <div class="timeline" id="timeline"></div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { tools: [] };
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        ...options,
+        headers: { "content-type": "application/json", ...(options.headers || {}) }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    function addMessage(kind, text) {
+      const div = document.createElement("div");
+      div.className = `msg ${kind}`;
+      div.textContent = text;
+      $("messages").appendChild(div);
+      $("messages").scrollTop = $("messages").scrollHeight;
+    }
+
+    function renderTools() {
+      $("tools").innerHTML = "";
+      for (const tool of state.tools) {
+        const div = document.createElement("div");
+        div.className = "tool";
+        div.innerHTML = `<b>${tool.name}</b><span class="muted">${tool.description || ""}</span>`;
+        const btn = document.createElement("button");
+        btn.className = "secondary";
+        btn.textContent = "Call {}";
+        btn.onclick = async () => {
+          try {
+            const data = await api("/api/call-tool", {
+              method: "POST",
+              body: JSON.stringify({ name: tool.name, arguments: {} })
+            });
+            addTimeline({ tool: tool.name, args: {}, isError: !data.ok, ms: data.ms, result: JSON.stringify(data.result, null, 2) });
+          } catch (err) {
+            addTimeline({ tool: tool.name, args: {}, isError: true, ms: 0, result: err.message });
+          }
+        };
+        div.appendChild(btn);
+        $("tools").appendChild(div);
+      }
+    }
+
+    function addTimeline(event) {
+      const div = document.createElement("div");
+      div.className = "box";
+      const status = event.isError ? `<span class="bad">error</span>` : `<span class="ok">ok</span>`;
+      div.innerHTML = `<b>${event.tool}</b> ${status} <span class="muted">${event.ms || 0}ms</span><pre>${escapeHtml(JSON.stringify(event.args || {}, null, 2))}</pre><pre>${escapeHtml(String(event.result || "").slice(0, 4000))}</pre>`;
+      $("timeline").prepend(div);
+    }
+
+    function escapeHtml(text) {
+      return text.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+
+    async function health() {
+      try {
+        const data = await api("/api/health");
+        $("health").innerHTML = data.openai_key_present ? `<span class="ok">ready</span>` : `<span class="bad">missing OPENAI_API_KEY</span>`;
+        $("model").value = data.model || $("model").value;
+      } catch {
+        $("health").innerHTML = `<span class="bad">offline</span>`;
+      }
+    }
+
+    async function connect() {
+      $("status").textContent = "Connecting...";
+      const data = await api("/api/connect", {
+        method: "POST",
+        body: JSON.stringify({ endpoint: $("endpoint").value.trim() })
+      });
+      state.tools = data.tools || [];
+      $("status").textContent = `Connected to ${data.endpoint}. ${state.tools.length} tools.`;
+      renderTools();
+    }
+
+    async function refreshTools() {
+      const data = await api("/api/tools");
+      state.tools = data.tools || [];
+      $("status").textContent = `Connected to ${data.endpoint}. ${state.tools.length} tools.`;
+      renderTools();
+    }
+
+    async function send() {
+      const message = $("prompt").value.trim();
+      if (!message) return;
+      $("prompt").value = "";
+      addMessage("user", message);
+      addMessage("agent", "Thinking...");
+      const last = $("messages").lastChild;
+      try {
+        const data = await api("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({ message, model: $("model").value.trim() })
+        });
+        last.textContent = data.text || "(no text)";
+        for (const event of data.timeline || []) addTimeline(event);
+      } catch (err) {
+        last.textContent = `Error: ${err.message}`;
+      }
+    }
+
+    $("connect").onclick = () => connect().catch((err) => { $("status").textContent = err.message; });
+    $("refresh").onclick = () => refreshTools().catch((err) => { $("status").textContent = err.message; });
+    $("send").onclick = send;
+    $("prompt").addEventListener("keydown", (event) => {
+      if (event.ctrlKey && event.key === "Enter") send();
+    });
+    health();
+  </script>
+</body>
+</html>

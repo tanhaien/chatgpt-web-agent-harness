@@ -3,6 +3,19 @@
 All notable changes to Local Coding Agent are documented here. The project
 follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `experiments/standalone-client-roadmap/` documents the path from
+  `v4.4.0-pro` to `v5.0.0` for a standalone Local Agent Studio that can run
+  without ChatGPT Web.
+- `v4.5.0-pro-local-client-mvp/` prototype adds a local browser UI and backend
+  that connect to the existing MCP server, list MCP tools, call tools manually,
+  and run an OpenAI Responses API tool loop when `OPENAI_API_KEY` is provided.
+- Separate roadmap folders now outline the planned model router, workspace
+  profiles, Agent Studio UI, packaging, and v5.0 productization milestones.
+
 ## [4.4.0-pro] - 2026-07-01
 
 ### Added
