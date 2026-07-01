@@ -26,6 +26,10 @@ follows [Semantic Versioning](https://semver.org/).
 - `docs/AI_AGENT_SETUP_PROMPT.md` and the README now include copy-paste prompts
   plus a setup map so users can ask their own AI coding agent to clone, install,
   configure, start, and verify the project.
+- `scripts/network-doctor.mjs` and `docs/NETWORK_DOCTOR.md` help customers
+  diagnose office-network blocks by checking DNS, TCP 443, TLS, HTTPS, local MCP
+  endpoints, proxy environment variables, and optional tunnel-client logs with
+  secret redaction.
 
 ### Fixed
 

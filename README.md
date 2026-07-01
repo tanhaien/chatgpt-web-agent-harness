@@ -120,6 +120,25 @@ flowchart TD
 Full copy-paste prompts are also available in
 **[docs/AI_AGENT_SETUP_PROMPT.md](docs/AI_AGENT_SETUP_PROMPT.md)**.
 
+### Customer network diagnostics
+
+If the local server works on mobile hotspot but fails on an office/internal
+network, ask the customer to run the network doctor and send back the redacted
+report:
+
+```powershell
+node scripts\network-doctor.mjs
+```
+
+For tunnel-specific failures:
+
+```powershell
+$env:CONTROL_PLANE_API_KEY="sk-proj-..."
+node scripts\network-doctor.mjs --tunnel-bin "tools\tunnel-client.exe" --tunnel-id "tunnel_..." --organization-id "org_..." --duration 30
+```
+
+Guide: **[docs/NETWORK_DOCTOR.md](docs/NETWORK_DOCTOR.md)**.
+
 ### Features
 
 - **50+ coding tools** over MCP: `repo_overview`, `list_files`, `find_files`,
