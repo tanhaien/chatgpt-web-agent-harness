@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// v4.5 standalone local client entry point.
+// v5.0 Local Agent Studio entry point.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { readFile } from "node:fs/promises";

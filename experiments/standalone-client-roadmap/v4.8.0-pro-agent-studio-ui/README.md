@@ -2,7 +2,7 @@
 
 Goal: turn the MVP into a real Agent Studio interface.
 
-## Planned Capabilities
+## Implemented Prototype
 
 - Chat timeline with:
   - model messages
@@ -10,30 +10,32 @@ Goal: turn the MVP into a real Agent Studio interface.
   - tool outputs
   - errors
   - approvals
-- Skill browser:
+- Skill controls:
   - list skills
   - read skill
   - validate skills
-  - copy skill prompt
-- Support tab:
+- Support controls:
   - status
   - doctor
   - network doctor
   - export support bundle
-- Dashboard tab:
+- Dashboard controls:
   - health score
   - latency
   - recent calls
   - top tools
 - File/diff viewer for changed files.
 
-## Deliverables
+## Run
 
-- Componentized frontend.
-- Tool timeline filters.
-- Safer manual tool-call form generated from JSON schema.
+```powershell
+npm install
+npm start
+```
 
-## Exit Criteria
+Open `http://127.0.0.1:5180`.
 
-- A customer can debug setup without opening terminal for common cases.
-- A developer can inspect exactly what the model did.
+Or double-click `dist\LocalAgentStudio.exe` after running `..\build-all.ps1`.
+
+Manual tool calls accept JSON arguments, and the UI exposes approvals,
+metrics, files, diffs, skills, support bundles, profiles, and MCP supervision.

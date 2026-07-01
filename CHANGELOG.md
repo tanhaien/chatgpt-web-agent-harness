@@ -13,8 +13,14 @@ follows [Semantic Versioning](https://semver.org/).
 - `v4.5.0-pro-local-client-mvp/` prototype adds a local browser UI and backend
   that connect to the existing MCP server, list MCP tools, call tools manually,
   and run an OpenAI Responses API tool loop when `OPENAI_API_KEY` is provided.
-- Separate roadmap folders now outline the planned model router, workspace
-  profiles, Agent Studio UI, packaging, and v5.0 productization milestones.
+- All standalone roadmap folders now contain runnable entry points, manifests,
+  package metadata, lockfiles, and version-specific feature flags.
+- The shared standalone runtime implements OpenAI, Anthropic, and Ollama model
+  adapters, tool loops, retry handling, model presets, profile CRUD/activation,
+  skill browsing/validation, metrics, approvals, file/diff views, managed MCP
+  start/stop, support bundles, and guarded customer updates.
+- A self-contained .NET Windows launcher and `build-all.ps1` produce a separate
+  `dist/LocalAgentStudio.exe` for every standalone version folder.
 
 ## [4.4.0-pro] - 2026-07-01
 

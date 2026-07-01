@@ -2,7 +2,7 @@
 
 Goal: support multiple customer workspaces cleanly.
 
-## Planned Capabilities
+## Implemented Prototype
 
 - Profile CRUD:
   - create
@@ -20,16 +20,20 @@ Goal: support multiple customer workspaces cleanly.
   - tunnel ID
   - organization ID
   - model preset
-- One-click launch profile.
-- Clear warning when the active workspace differs from expected.
+- Activate a profile, then start the MCP server from the Studio UI.
+- Active profile, endpoint, model, and workspace are shown in the profile list
+  and connection status.
 
-## Deliverables
+## Run
 
-- Shared config format between CLI and standalone client.
-- Profile selector in the standalone UI.
-- Migration from existing CLI config.
+```powershell
+npm install
+npm start
+```
 
-## Exit Criteria
+Open `http://127.0.0.1:5179`.
 
-- A user can switch between two repos without editing environment variables.
-- `workspace_info` shown in UI always matches the active profile.
+Or double-click `dist\LocalAgentStudio.exe` after running `..\build-all.ps1`.
+
+Profile data is stored under the current user's local application-data folder,
+not committed to the repository.

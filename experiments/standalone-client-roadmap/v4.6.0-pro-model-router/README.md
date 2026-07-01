@@ -2,7 +2,7 @@
 
 Goal: make the standalone client model-agnostic.
 
-## Planned Capabilities
+## Implemented Prototype
 
 - Model provider interface:
   - OpenAI Responses API
@@ -15,18 +15,20 @@ Goal: make the standalone client model-agnostic.
   - deep-review
   - local-only
 - Retry and rate-limit handling.
-- Cost/latency display per request where the provider exposes usage.
+- Retry handling for network errors, HTTP 429, and HTTP 5xx responses.
+- Tool-call latency is shown in the timeline; raw provider usage remains
+  available in the returned response payload.
 
-## Deliverables
+## Run
 
-- `src/providers/openai.mjs`
-- `src/providers/anthropic.mjs`
-- `src/providers/ollama.mjs`
-- `src/tool-schema-adapters.mjs`
-- UI model picker with provider status.
+```powershell
+npm install
+npm start
+```
 
-## Exit Criteria
+Open `http://127.0.0.1:5178`.
 
-- Same MCP tool loop works with at least OpenAI and one local-model adapter.
-- Provider errors are shown without leaking API keys.
-- Existing v4.5 chat UI still works.
+Or double-click `dist\LocalAgentStudio.exe` after running `..\build-all.ps1`.
+
+The provider adapters are included in this folder's `standalone-app.mjs`.
+`../shared/standalone-app.mjs` is the canonical copy used by `build-all.ps1`.

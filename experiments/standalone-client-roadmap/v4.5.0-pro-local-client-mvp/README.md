@@ -44,6 +44,8 @@ Open:
 http://127.0.0.1:5177
 ```
 
+Or double-click `dist\LocalAgentStudio.exe` after running `..\build-all.ps1`.
+
 ## Notes
 
 - This is an experiment, not a replacement for ChatGPT Web yet.

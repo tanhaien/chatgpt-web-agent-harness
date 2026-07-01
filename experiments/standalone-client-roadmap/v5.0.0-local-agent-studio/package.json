@@ -1,9 +1,9 @@
 {
-  "name": "local-agent-client-mvp",
-  "version": "4.5.0-pro",
+  "name": "local-agent-studio-v5",
+  "version": "5.0.0",
   "private": true,
   "type": "module",
-  "description": "Standalone experimental Local Coding Agent client that talks to a model API and the local MCP server.",
+  "description": "Productized standalone Local Agent Studio prototype.",
   "scripts": {
     "start": "node server.mjs",
     "check": "node --check server.mjs && node --check standalone-app.mjs"

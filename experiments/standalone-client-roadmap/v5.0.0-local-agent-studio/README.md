@@ -15,6 +15,27 @@ Local Agent Studio is a standalone local app that:
 - exports support bundles,
 - updates safely.
 
+## Implemented Prototype
+
+- OpenAI, Anthropic, and Ollama provider adapters.
+- MCP server start, stop, status, connection, and tool execution.
+- Workspace profile create, activate, delete, and redacted export.
+- Skills list/read/validate controls.
+- Metrics, approvals, file preview, and Git diff controls.
+- Redacted support bundle export.
+- Guarded customer update flow.
+- Windows x64 `dist/LocalAgentStudio.exe`.
+
+## Run
+
+```powershell
+npm install
+npm start
+```
+
+Open `http://127.0.0.1:5182`, or double-click
+`dist\LocalAgentStudio.exe`.
+
 ## v5 Requirements
 
 - No GPT Web dependency for the core local coding workflow.
@@ -35,7 +56,7 @@ Local Agent Studio is a standalone local app that:
   - network doctor
   - support bundle
 
-## Exit Criteria
+## Production Exit Criteria
 
 - A non-expert customer can install, connect a model key, select a workspace,
   ask the agent to inspect a repo, approve risky actions, and send a support

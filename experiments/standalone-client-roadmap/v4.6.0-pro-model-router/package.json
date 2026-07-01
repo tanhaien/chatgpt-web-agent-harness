@@ -1,9 +1,9 @@
 {
-  "name": "local-agent-client-mvp",
-  "version": "4.5.0-pro",
+  "name": "local-agent-studio-v4-6-model-router",
+  "version": "4.6.0-pro",
   "private": true,
   "type": "module",
-  "description": "Standalone experimental Local Coding Agent client that talks to a model API and the local MCP server.",
+  "description": "Standalone Local Agent Studio prototype with a multi-provider model router.",
   "scripts": {
     "start": "node server.mjs",
     "check": "node --check server.mjs && node --check standalone-app.mjs"

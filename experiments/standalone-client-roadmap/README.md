@@ -18,12 +18,16 @@ client is a separate local app that:
 
 | Folder | Goal | Status |
 |---|---|---|
-| `v4.5.0-pro-local-client-mvp/` | Standalone local web client with OpenAI Responses API + MCP tool loop. | Buildable MVP |
-| `v4.6.0-pro-model-router/` | Multi-model adapter layer for OpenAI, Anthropic, and local/Ollama-style models. | Spec |
-| `v4.7.0-pro-workspace-profiles/` | Profiles for many customer workspaces, policies, ports, and model presets. | Spec |
-| `v4.8.0-pro-agent-studio-ui/` | Rich Agent Studio UI with timeline, approvals, skill browser, and support diagnostics. | Spec |
-| `v4.9.0-pro-packaging/` | Portable packages, signed Windows path, update assistant, and customer support bundle. | Spec |
-| `v5.0.0-local-agent-studio/` | Productized Local Agent Studio with installer, profiles, skills, diagnostics, and update flow. | Spec |
+| `v4.5.0-pro-local-client-mvp/` | Standalone local web client with OpenAI Responses API + MCP tool loop. | Runnable + EXE |
+| `v4.6.0-pro-model-router/` | OpenAI, Anthropic, and Ollama model adapters with presets and retry handling. | Runnable + EXE |
+| `v4.7.0-pro-workspace-profiles/` | Local profile CRUD, activation, redacted export, workspace/model/policy settings. | Runnable + EXE |
+| `v4.8.0-pro-agent-studio-ui/` | Tool timeline, approvals, skills, metrics, file viewer, and Git diff controls. | Runnable + EXE |
+| `v4.9.0-pro-packaging/` | Managed MCP start/stop, support bundle, and Windows launcher packaging. | Runnable + EXE |
+| `v5.0.0-local-agent-studio/` | Combined Studio runtime with profiles, skills, diagnostics, approvals, packaging, and guarded update. | Runnable + EXE |
+
+`shared/standalone-app.mjs` is the canonical runtime. `build-all.ps1` copies it
+into every version folder so each folder keeps its own complete runtime,
+package, lockfile, entry point, manifest, port, feature flags, and EXE.
 
 ## Architecture
 
@@ -68,6 +72,32 @@ Open:
 http://127.0.0.1:5177
 ```
 
+## Windows EXE
+
+Build every version and copy a self-contained .NET launcher into each version:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File experiments\standalone-client-roadmap\build-all.ps1
+```
+
+Then double-click:
+
+```text
+<version-folder>\dist\LocalAgentStudio.exe
+```
+
+Every version folder receives its own launcher and can be tested independently.
+The launcher still requires Node.js 18+ because it starts the version's Node
+runtime. If `node_modules` is missing, it runs `npm install` before startup.
+
+Model credentials remain optional until chat is used:
+
+```powershell
+$env:OPENAI_API_KEY="..."
+$env:ANTHROPIC_API_KEY="..."
+$env:OLLAMA_BASE_URL="http://127.0.0.1:11434"
+```
+
 ## Tieng Viet
 
 Thu muc thu nghiem nay ghi lai lo trinh tu `v4.4.0-pro` len `v5.0.0`: chuyen
@@ -86,12 +116,12 @@ la mot app local rieng:
 
 | Thu muc | Muc tieu | Trang thai |
 |---|---|---|
-| `v4.5.0-pro-local-client-mvp/` | Local web client rieng voi OpenAI Responses API + MCP tool loop. | MVP build duoc |
-| `v4.6.0-pro-model-router/` | Lop multi-model adapter cho OpenAI, Anthropic va local/Ollama-style models. | Spec |
-| `v4.7.0-pro-workspace-profiles/` | Profiles cho nhieu workspace khach hang, policy, ports va model presets. | Spec |
-| `v4.8.0-pro-agent-studio-ui/` | Agent Studio UI day du hon voi timeline, approvals, skill browser va support diagnostics. | Spec |
-| `v4.9.0-pro-packaging/` | Portable packages, huong signed Windows, update assistant va customer support bundle. | Spec |
-| `v5.0.0-local-agent-studio/` | Local Agent Studio hoan thien voi installer, profiles, skills, diagnostics va update flow. | Spec |
+| `v4.5.0-pro-local-client-mvp/` | Local web client rieng voi OpenAI Responses API + MCP tool loop. | Chay duoc + EXE |
+| `v4.6.0-pro-model-router/` | Adapter OpenAI, Anthropic va Ollama voi preset va retry. | Chay duoc + EXE |
+| `v4.7.0-pro-workspace-profiles/` | CRUD/activate/export profile, workspace, model va policy settings. | Chay duoc + EXE |
+| `v4.8.0-pro-agent-studio-ui/` | Timeline, approvals, skills, metrics, file viewer va Git diff. | Chay duoc + EXE |
+| `v4.9.0-pro-packaging/` | Start/stop MCP, support bundle va Windows launcher. | Chay duoc + EXE |
+| `v5.0.0-local-agent-studio/` | Ban tong hop profiles, skills, diagnostics, approvals, packaging va update. | Chay duoc + EXE |
 
 ## Kien Truc
 
@@ -134,3 +164,21 @@ Mo:
 ```text
 http://127.0.0.1:5177
 ```
+
+## Windows EXE
+
+Build tat ca version va copy launcher vao tung folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File experiments\standalone-client-roadmap\build-all.ps1
+```
+
+Sau do double-click:
+
+```text
+<version-folder>\dist\LocalAgentStudio.exe
+```
+
+Moi thu muc phien ban deu co launcher rieng va co the test doc lap. Launcher van
+can Node.js 18+ de chay Node runtime cua app. Neu chua co `node_modules`,
+launcher se tu chay `npm install`.

@@ -2,13 +2,10 @@
 
 Goal: make customer distribution simple.
 
-## Planned Capabilities
+## Implemented Prototype
 
-- Portable archives:
-  - Windows x64
-  - macOS arm64/x64
-  - Linux x64
-- Windows self-contained tray/studio build.
+- Windows x64 self-contained .NET launcher.
+- Independent `dist/LocalAgentStudio.exe` in every version folder.
 - Update assistant:
   - check current version
   - fetch latest release
@@ -22,13 +19,13 @@ Goal: make customer distribution simple.
   - health summary
   - relevant logs
 
-## Deliverables
+## Build
 
-- Release asset build scripts.
-- Checksums for all assets.
-- Clear customer install/update docs.
+```powershell
+powershell -ExecutionPolicy Bypass -File ..\build-all.ps1
+```
 
-## Exit Criteria
+Run `dist\LocalAgentStudio.exe`.
 
-- Customer can download a release asset and run without building from source.
-- Support can ask for one bundle instead of many screenshots.
+The launcher requires Node.js 18+ and installs npm dependencies when they are
+missing. macOS/Linux portable packaging remains a later release task.
