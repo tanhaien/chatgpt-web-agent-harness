@@ -3,18 +3,61 @@
   "version": "5.0.0",
   "private": true,
   "type": "module",
+  "author": "Local Coding Agent",
   "engines": {
     "node": ">=22.5.0"
   },
   "description": "Productized standalone Local Agent Studio prototype.",
+  "main": "desktop/main.mjs",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check standalone-app.mjs && node --check core/security.mjs && node --check core/redaction.mjs && node --check core/thread-store.mjs && node --check core/license-service.mjs && node --check core/integrity-service.mjs",
+    "check": "node --check server.mjs && node --check standalone-app.mjs && node --check desktop/main.mjs && node --check desktop/preload.mjs && node --check core/security.mjs && node --check core/redaction.mjs && node --check core/thread-store.mjs && node --check core/license-service.mjs && node --check core/integrity-service.mjs && tsc --noEmit",
+    "ui:build": "vite build",
+    "desktop:dev": "electron .",
+    "desktop:pack": "npm run ui:build && electron-builder --dir",
+    "desktop:dist": "npm run ui:build && electron-builder",
     "test": "node --test test/*.test.mjs",
     "security:audit": "node scripts/security-audit.mjs",
     "integrity:generate": "node scripts/generate-integrity-manifest.mjs"
   },
+  "build": {
+    "appId": "dev.localcodingagent.studio",
+    "productName": "Local Agent Studio",
+    "asar": false,
+    "files": [
+      "core/**/*",
+      "desktop/**/*",
+      "dist/ui/**/*",
+      "scripts/**/*",
+      "standalone-app.mjs",
+      "server.mjs",
+      "version-manifest.json",
+      "package.json"
+    ],
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "mac": {
+      "target": ["dmg"]
+    },
+    "linux": {
+      "target": ["AppImage"]
+    }
+  },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.20.0"
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "@tanstack/react-virtual": "^3.14.5",
+    "lucide-react": "^1.23.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.4",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.9.2",
+    "vite": "^8.1.2"
   }
 }

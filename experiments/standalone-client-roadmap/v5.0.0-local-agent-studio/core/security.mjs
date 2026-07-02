@@ -62,6 +62,22 @@ export function createStudioSecurity({ host = "127.0.0.1", port, token, nonce } 
         ].join("; ")
       };
     },
+    staticHtmlHeaders() {
+      return {
+        ...baseSecurityHeaders(),
+        "content-security-policy": [
+          "default-src 'none'",
+          "script-src 'self'",
+          "style-src 'self'",
+          "img-src 'self' data:",
+          "connect-src 'self'",
+          "font-src 'self'",
+          "frame-ancestors 'none'",
+          "base-uri 'none'",
+          "form-action 'none'"
+        ].join("; ")
+      };
+    },
     apiHeaders() {
       return baseSecurityHeaders();
     }

@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { IntegrityService, loadReleasePublicKey } from "./core/integrity-service.mjs";
 import { LicenseService, loadLicensePublicKey } from "./core/license-service.mjs";
@@ -16,6 +16,7 @@ import { createStudioSecurity } from "./core/security.mjs";
 import { ThreadStore } from "./core/thread-store.mjs";
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
+const UI_DIST_DIR = join(APP_DIR, "dist", "ui");
 const DEFAULT_MCP_URL = process.env.MCP_ENDPOINT || "http://127.0.0.1:8787/mcp";
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const DEFAULT_PROVIDER = process.env.LCA_MODEL_PROVIDER || "openai";
@@ -66,8 +67,16 @@ export function startStudio(manifest) {
       if (!authorization.ok) return sendJson(res, authorization.status, { error: authorization.error });
       return handleApi(req, res, url, state);
     }
+    const authorization = security.authorize(req, { publicRoute: true });
+    if (!authorization.ok) return sendJson(res, authorization.status, { error: authorization.error });
     if (url.pathname === "/" || url.pathname === "/index.html") {
+      if (existsSync(join(UI_DIST_DIR, "index.html"))) {
+        return serveUiIndex(res, security);
+      }
       return sendText(res, 200, renderHtml(manifest, security), "text/html; charset=utf-8", security.htmlHeaders());
+    }
+    if (url.pathname.startsWith("/assets/")) {
+      return serveUiAsset(res, url.pathname);
     }
     return sendJson(res, 404, { error: "Not found" });
   });
@@ -879,6 +888,42 @@ function sendJson(res, status, body) {
 function sendText(res, status, body, type, headers = {}) {
   res.writeHead(status, { "content-type": type, "cache-control": "no-store", ...headers });
   res.end(body);
+}
+
+async function serveUiIndex(res, security) {
+  const html = await readFile(join(UI_DIST_DIR, "index.html"), "utf8");
+  const body = html.replace("%LCA_STUDIO_TOKEN%", escapeHtml(security.token));
+  sendText(res, 200, body, "text/html; charset=utf-8", security.staticHtmlHeaders());
+}
+
+async function serveUiAsset(res, pathname) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return sendJson(res, 400, { error: "Invalid asset path" });
+  }
+  const root = resolve(UI_DIST_DIR);
+  const filePath = resolve(root, `.${decoded}`);
+  if (filePath !== root && !filePath.startsWith(`${root}${sep}`)) {
+    return sendJson(res, 403, { error: "Invalid asset path" });
+  }
+  if (!existsSync(filePath)) return sendJson(res, 404, { error: "Asset not found" });
+  const body = await readFile(filePath);
+  sendText(res, 200, body, mimeType(filePath), { "cache-control": "public, max-age=31536000, immutable" });
+}
+
+function mimeType(filePath) {
+  switch (extname(filePath).toLowerCase()) {
+    case ".js": return "text/javascript; charset=utf-8";
+    case ".css": return "text/css; charset=utf-8";
+    case ".svg": return "image/svg+xml";
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".woff2": return "font/woff2";
+    default: return "application/octet-stream";
+  }
 }
 
 function applyHeaders(res, headers) {

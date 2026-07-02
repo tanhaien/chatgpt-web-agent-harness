@@ -20,6 +20,7 @@ server/data/
 server/*.log
 tmp-*/
 *-test-workspace/
+experiments/standalone-client-roadmap/v5.0.0-local-agent-studio/dist/
 
 # ---- .NET / build output ----
 bin/

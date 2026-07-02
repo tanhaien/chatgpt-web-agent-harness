@@ -29,7 +29,8 @@ test("Studio HTTP boundary blocks CSRF and persists authenticated threads", asyn
     assert.match(root.headers.get("content-security-policy") || "", /default-src 'none'/);
     assert.equal(root.headers.get("x-frame-options"), "DENY");
     const html = await root.text();
-    const token = html.match(/const STUDIO_TOKEN="([A-Za-z0-9_-]+)"/)?.[1];
+    const token = html.match(/const STUDIO_TOKEN="([A-Za-z0-9_-]+)"/)?.[1] ||
+      html.match(/<meta name="lca-studio-token" content="([A-Za-z0-9_-]+)" \/>/)?.[1];
     assert.ok(token, "session token should be embedded only in the same-origin HTML");
 
     const missingToken = await fetch(`http://127.0.0.1:${port}/api/threads`);

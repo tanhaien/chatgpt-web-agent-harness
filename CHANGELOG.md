@@ -25,6 +25,9 @@ follows [Semantic Versioning](https://semver.org/).
   enforcement, CSP headers, SQLite thread/turn persistence, recursive support
   redaction, signed-license verification, signed release-integrity support,
   anti-backdoor auditing, and cross-platform regression tests.
+- Studio v5 now includes an Electron desktop shell plus a React/Vite renderer
+  with virtualized chat, thread navigation, MCP controls, tool inventory, and
+  tool timeline for long local-agent sessions without relying on ChatGPT Web.
 
 ## [4.4.0-pro] - 2026-07-01
 

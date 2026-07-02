@@ -1,138 +1,184 @@
 # v5.0.0 Local Agent Studio Preview
 
-Goal: productize the standalone local AI coding experience.
+Local Agent Studio is the productized desktop path for Local Coding Agent. It
+keeps the MCP-powered local coding workflow, but moves the daily experience out
+of ChatGPT Web and into a standalone app with durable threads, tool timeline,
+workspace controls, diagnostics, and commercial-release guardrails.
 
-## Product Shape
-
-Local Agent Studio is a standalone local app that:
-
-- starts and supervises the MCP server,
-- connects to one or more model providers,
-- runs the model/tool loop locally,
-- manages workspace profiles,
-- shows tool calls and approvals,
-- validates skills,
-- exports support bundles,
-- updates safely.
-
-## Implemented Preview Foundation
+## What Is Implemented
 
 - OpenAI, Anthropic, and Ollama provider adapters.
-- MCP server start, stop, status, connection, and tool execution.
-- Workspace profile create, activate, delete, and redacted export.
-- Skills list/read/validate controls.
-- Metrics, approvals, file preview, and Git diff controls.
-- Redacted support bundle export.
-- Guarded customer update flow.
-- Windows x64 `dist/LocalAgentStudio.exe`.
-- Loopback-only API security with a per-process capability token, strict Origin
-  and Host validation, JSON-only mutation requests, CSP, and anti-framing
-  headers.
+- MCP server connect, tool listing, tool execution, and managed start/stop/status.
+- React + Vite renderer with virtualized chat messages for long threads.
+- Electron desktop shell with `nodeIntegration=false`, `contextIsolation=true`,
+  renderer sandboxing, denied permission prompts, and local-only navigation.
+- Workspace profiles, Skills controls, dashboard metrics, approvals, file
+  preview, Git diff, support bundle export, and guarded customer update flow.
+- Loopback-only API boundary with Host/Origin validation, random per-process
+  capability token, JSON-only mutation requests, CSP, no-sniff, anti-framing,
+  restrictive permissions policy, and remote-MCP opt-in.
 - Durable SQLite threads, turns, messages, and tool events.
-- Recursive support-bundle redaction with raw tool arguments/results excluded
-  from exported event metadata.
-- Ed25519-signed commercial license verification. Preview builds run without a
-  key; Stable builds fail closed.
-- Separate Ed25519 release-integrity verification and an anti-backdoor source
-  audit. Signing private keys are never stored in the app or repository.
-- Automated security, persistence, licensing, integrity, and HTTP boundary
-  regression tests.
+- Recursive redaction for support bundles. Raw tool arguments/results are not
+  exported in the event list.
+- Ed25519 commercial license verification. Preview builds run without a key;
+  Stable builds fail closed.
+- Separate Ed25519 release-integrity verification and anti-backdoor source audit.
+  Signing private keys are never stored in the app or repository.
+- Automated tests for security, persistence, licensing, integrity, and HTTP
+  boundary behavior.
 
-## Run
+## Run Preview
 
 ```powershell
 npm install
+npm run check
 npm test
 npm run security:audit
+npm run ui:build
 npm start
 ```
 
-Open `http://127.0.0.1:5182`, or double-click
-`dist\LocalAgentStudio.exe`.
+Open `http://127.0.0.1:5182`.
 
-Node.js 22.5+ is required for the Preview source launcher because the durable
-thread store uses the built-in SQLite module. The production desktop package
-will bundle its runtime so customers do not install Node.js.
+## Run Desktop Preview
+
+```powershell
+npm run ui:build
+npm run desktop:dev
+```
+
+The desktop app starts the v5 Studio server as a local child process and opens
+the app UI in Electron. The current Preview launcher uses the system `node`
+binary, so Node.js 22.5+ is required because the thread store uses the built-in
+SQLite module.
+
+Production packaging should bundle or verify the runtime so customers do not
+need to install Node.js manually.
+
+## Build Desktop Package
+
+```powershell
+npm run desktop:pack
+```
+
+For release artifacts:
+
+```powershell
+npm run desktop:dist
+```
+
+Stable release builds still need signed installers, signed update manifests,
+runtime bundling, and platform-specific code signing before customer release.
 
 ## Preview Licensing
 
-No commercial key is required while `releaseStage` is `preview`. The Stable
-build will accept only an admin-issued license token signed outside the app.
-The app contains only the public verification key; an admin private key must
-never be committed, bundled, passed on a command line, or sent to customers.
+No commercial key is required while `releaseStage` is `preview`.
+
+Stable builds accept only an admin-issued license token signed outside the app.
+The app contains only the public verification key. The admin private key must
+never be committed, bundled, passed on a command line, placed in CI logs, or
+sent to customers.
 
 Release integrity uses a different signing key from customer licensing. See
 `docs/SECURITY_AND_COMMERCIALIZATION.md` for the threat model and release gates.
 
-## v5 Requirements
-
-- No GPT Web dependency for the core local coding workflow.
-- ChatGPT Web tunnel remains optional.
-- Installer or portable package for normal customers.
-- Safe defaults:
-  - `AGENT_MODE=safe`
-  - `AGENT_POLICY=balanced`
-  - no public tunnel without auth guidance
-- Skills are first-class:
-  - install
-  - validate
-  - browse
-  - use
-  - author
-- Diagnostics are first-class:
-  - setup doctor
-  - network doctor
-  - support bundle
-
 ## Production Exit Criteria
 
-- A non-expert customer can install, connect a model key, select a workspace,
-  ask the agent to inspect a repo, approve risky actions, and send a support
-  report if something fails.
-- The old GPT Web connector workflow still works for users who prefer it.
+- A non-expert customer can install the app, connect a model key, select a
+  workspace, ask the agent to inspect a repo, approve risky actions, and export
+  a support report if something fails.
+- The app can run without ChatGPT Web for the core coding workflow.
+- The old ChatGPT Web connector workflow remains optional for users who prefer it.
+- Commercial builds fail closed on missing license, invalid release integrity,
+  or tampered runtime files.
 
 ---
 
-## Tiếng Việt
+# v5.0.0 Local Agent Studio Preview (Tiếng Việt)
 
-Mục tiêu của Local Agent Studio là tạo một coding agent local độc lập, không
-phụ thuộc vào khung chat ChatGPT Web, nhưng vẫn dùng Local Coding Agent MCP làm
-engine thao tác workspace.
+Local Agent Studio là hướng desktop thương mại hóa của Local Coding Agent. App
+vẫn giữ workflow coding local qua MCP, nhưng chuyển trải nghiệm hằng ngày ra
+khỏi ChatGPT Web và đưa vào app riêng có thread bền vững, timeline tool,
+workspace controls, diagnostics và các lớp kiểm soát để phát hành thương mại.
 
-### Nền Tảng Preview Đã Có
+## Đã Có Gì
 
-- Adapter OpenAI, Anthropic và Ollama.
-- Start/stop/status MCP server và thực thi tool.
-- Workspace profiles, Skills, metrics, approvals, file preview và Git diff.
-- Support Bundle và Customer Update Flow có kiểm soát.
-- API chỉ lắng nghe loopback, dùng session token ngẫu nhiên theo tiến trình,
-  kiểm tra Origin/Host, chỉ nhận JSON cho thao tác thay đổi và gửi CSP.
-- SQLite lưu bền Thread, Turn, message và tool event.
-- Support Bundle redaction đệ quy và không xuất raw tool args/results.
-- License thương mại ký bằng Ed25519. Preview chưa cần key; Stable sẽ fail-closed.
-- Release integrity dùng cặp khóa ký riêng và có security audit chống backdoor.
-- Regression tests cho security, persistence, licensing, integrity và HTTP.
+- Adapter cho OpenAI, Anthropic và Ollama.
+- Kết nối MCP server, liệt kê tool, chạy tool, start/stop/status server do app quản lý.
+- Renderer React + Vite với chat message được virtualize để thread dài không kéo lag.
+- Electron desktop shell với `nodeIntegration=false`, `contextIsolation=true`,
+  renderer sandbox, từ chối permission prompt và chỉ cho điều hướng local.
+- Workspace profiles, Skills controls, dashboard metrics, approvals, file
+  preview, Git diff, support bundle export và guarded customer update flow.
+- API chỉ nghe loopback, kiểm tra Host/Origin, token ngẫu nhiên theo từng tiến
+  trình, thao tác thay đổi chỉ nhận JSON, CSP, no-sniff, anti-framing,
+  permissions policy chặt và remote MCP phải bật thủ công.
+- SQLite lưu bền thread, turn, message và tool event.
+- Support bundle có redaction đệ quy. Event list không xuất raw tool args/results.
+- Xác minh license thương mại bằng Ed25519. Bản Preview chạy không cần key; bản
+  Stable sẽ fail closed.
+- Xác minh release integrity bằng Ed25519 riêng và có anti-backdoor source audit.
+  Private key dùng để ký không được lưu trong app hoặc repo.
+- Test tự động cho security, persistence, licensing, integrity và HTTP boundary.
 
-### Chạy Preview
+## Chạy Preview
 
 ```powershell
 npm install
+npm run check
 npm test
 npm run security:audit
+npm run ui:build
 npm start
 ```
 
-Mở `http://127.0.0.1:5182` hoặc chạy `dist\LocalAgentStudio.exe`.
+Mở `http://127.0.0.1:5182`.
 
-Bản chạy source hiện cần Node.js 22.5+ vì Thread Store dùng SQLite tích hợp.
-Bản desktop thương mại sau này sẽ bundle runtime, khách không phải cài Node.js.
+## Chạy Desktop Preview
 
-### License Preview
+```powershell
+npm run ui:build
+npm run desktop:dev
+```
 
-Khi `releaseStage` là `preview`, app không yêu cầu key thương mại. Bản Stable
-chỉ chấp nhận license token do admin ký ở bên ngoài app. App chỉ chứa public
-key để xác minh; admin private key tuyệt đối không được commit, bundle, truyền
-qua command line hoặc gửi cho khách.
+Desktop app sẽ start v5 Studio server như một local child process và mở UI trong
+Electron. Launcher Preview hiện dùng binary `node` của máy, nên cần Node.js
+22.5+ vì thread store dùng SQLite tích hợp của Node.
 
-Khóa ký release phải tách biệt với khóa ký license khách hàng. Xem
+Bản production nên bundle hoặc kiểm tra runtime để khách hàng không phải tự cài
+Node.js.
+
+## Build Desktop Package
+
+```powershell
+npm run desktop:pack
+```
+
+Để tạo artifact release:
+
+```powershell
+npm run desktop:dist
+```
+
+Bản Stable vẫn cần signed installer, signed update manifest, bundle runtime và
+ký code theo từng hệ điều hành trước khi phát hành cho khách hàng.
+
+## License Preview
+
+Khi `releaseStage` là `preview`, app chưa cần key thương mại.
+
+Bản Stable chỉ chấp nhận license token do admin ký ở bên ngoài app. App chỉ chứa
+public verification key. Admin private key tuyệt đối không được commit, bundle,
+truyền qua command line, đặt trong CI log hoặc gửi cho khách hàng.
+
+Release integrity dùng khóa ký riêng với customer licensing. Xem
 `docs/SECURITY_AND_COMMERCIALIZATION.md` để biết threat model và release gates.
+
+## Tiêu Chí Lên Production
+
+- Khách không chuyên có thể cài app, nhập model key, chọn workspace, yêu cầu
+  agent inspect repo, approve hành động rủi ro và export support report khi lỗi.
+- App chạy được workflow coding chính mà không phụ thuộc ChatGPT Web.
+- Workflow connector ChatGPT Web cũ vẫn là tùy chọn cho người thích dùng.
+- Bản thương mại fail closed nếu thiếu license, release integrity sai hoặc file
+  runtime bị chỉnh sửa.
