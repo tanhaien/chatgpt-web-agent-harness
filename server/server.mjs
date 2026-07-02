@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import http from "node:http";
+import https from "node:https";
 import { spawn, spawnSync } from "node:child_process";
 import {
   mkdir,
@@ -431,6 +432,9 @@ function createMcpServer() {
   registerPlannerTools(mcp);      // v2.5
   registerPolicyTools(mcp);       // v2.6
   registerProfileTools(mcp);      // v2.8
+  registerWebSearchTools(mcp);    // v2.9
+  registerVerifyTools(mcp);       // v2.9
+  registerSandboxTools(mcp);      // v2.9
   return mcp;
 }
 
@@ -5163,6 +5167,89 @@ function registerProfileTools(mcp) {
   );
 }
 
+// ----------------------------------------------------------------------------
+// Sandbox execution via Docker (v2.9)
+// ----------------------------------------------------------------------------
+function registerSandboxTools(mcp) {
+  reg(
+    mcp,
+    "sandbox_exec",
+    {
+      title: "Docker sandbox execution",
+      description: "Run a command inside a disposable Docker container with the agent workspace mounted at /workspace. Use any Docker image (default: python:3.12-slim). Returns exit code, stdout, stderr, and duration.",
+      inputSchema: {
+        command: z.string().describe("Shell command to execute inside the container"),
+        image: z.string().default("python:3.12-slim").describe("Docker image to use"),
+        timeout: z.number().int().min(1).max(600).default(120).describe("Timeout in seconds"),
+        workdir: z.string().default("/workspace").describe("Working directory inside the container"),
+        env_vars: z.record(z.string(), z.string()).optional().describe("Optional environment variables")
+      }
+    },
+    async (args) => {
+      const startedMs = performance.now();
+      const command = String(args.command || "");
+      const image = String(args.image || "python:3.12-slim");
+      const timeoutSec = Math.max(1, Math.min(600, Number(args.timeout || 120)));
+      const workdir = String(args.workdir || "/workspace");
+      const envVars = args.env_vars && typeof args.env_vars === "object" ? args.env_vars : {};
+
+      // Build docker run arguments: --rm for cleanup, mount workspace, set working directory
+      const dockerArgs = [
+        "run", "--rm",
+        "-v", `${PRIMARY_ROOT}:/workspace`,
+        "-w", workdir
+      ];
+
+      // Add optional environment variables
+      for (const [key, value] of Object.entries(envVars)) {
+        dockerArgs.push("-e", `${key}=${String(value)}`);
+      }
+
+      // Image and shell command
+      dockerArgs.push(image);
+      dockerArgs.push("sh", "-c", command);
+
+      try {
+        const result = spawnSync("docker", dockerArgs, {
+          timeout: timeoutSec * 1000,
+          encoding: "utf8",
+          maxBuffer: 10 * 1024 * 1024 // 10 MB
+        });
+
+        const durationMs = Math.round((performance.now() - startedMs) * 10) / 10;
+
+        return jsonResult({
+          exit_code: result.status ?? null,
+          stdout: String(result.stdout || ""),
+          stderr: String(result.stderr || ""),
+          duration_ms: durationMs
+        });
+      } catch (err) {
+        const durationMs = Math.round((performance.now() - startedMs) * 10) / 10;
+
+        // Handle spawn-timeout specifically: spawnSync throws with partial output
+        if (err.killed || err.code === "ETIMEDOUT" || err.signal === "SIGTERM") {
+          return jsonResult({
+            exit_code: null,
+            stdout: err.stdout ? String(err.stdout) : "",
+            stderr: (err.stderr ? String(err.stderr) + "\n" : "") +
+              `ERROR: Command timed out after ${timeoutSec}s`,
+            duration_ms: durationMs
+          });
+        }
+
+        // docker not found, or other spawn errors
+        return jsonResult({
+          exit_code: null,
+          stdout: "",
+          stderr: `ERROR: ${err?.message || err}`,
+          duration_ms: durationMs
+        });
+      }
+    }
+  );
+}
+
 // Helper: get test commands merging profile overrides
 async function getTestCommandsMerged(rootDir) {
   const detected = await detectTestCommands(rootDir);
@@ -5170,4 +5257,218 @@ async function getTestCommandsMerged(rootDir) {
     return { ...detected, ...WORKSPACE_PROFILE.testCommands };
   }
   return detected;
+}
+
+// ----------------------------------------------------------------------------
+// Web search tools (v2.9)
+// ----------------------------------------------------------------------------
+function registerWebSearchTools(mcp) {
+  // --- DuckDuckGo web search via HTML lite API ---
+  reg(
+    mcp,
+    "web_search",
+    {
+      title: "Web search via DuckDuckGo",
+      description: "Search the web via DuckDuckGo HTML API (lite.duckduckgo.com/lite). Returns titles, URLs, and snippets. Free, no API key required.",
+      inputSchema: {
+        query: z.string().describe("Search query string"),
+        max_results: z.number().min(1).max(10).default(5).describe("Maximum results to return (1-10, default 5)")
+      }
+    },
+    async (args) => {
+      const q = encodeURIComponent(String(args.query || ""));
+      const max = Math.max(1, Math.min(10, args.max_results ?? 5));
+      const url = `https://lite.duckduckgo.com/lite/?q=${q}`;
+
+      return new Promise((resolve) => {
+        https.get(url, { headers: { "User-Agent": "LCA/1.0" } }, (res) => {
+          let body = "";
+          res.on("data", (chunk) => { body += chunk; });
+          res.on("end", () => {
+            try {
+              const results = [];
+              // Parse DuckDuckGo lite HTML: rows with <a> links and <td> snippets
+              const linkRe = /<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi;
+              const snippetRe = /<td class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi;
+              const links = [];
+              const snippets = [];
+              let m;
+              while ((m = linkRe.exec(body)) !== null) {
+                const decoded = decodeURIComponent(m[1].replace(/^\/\/?/, ""));
+                const href = decoded.startsWith("http") ? decoded : `https://${decoded}`;
+                links.push({ href, title: m[2].replace(/<\/?[^>]+>/g, "").trim() });
+              }
+              while ((m = snippetRe.exec(body)) !== null) {
+                snippets.push(m[1].replace(/<\/?[^>]+>/g, "").trim());
+              }
+              const count = Math.min(max, links.length);
+              for (let i = 0; i < count; i++) {
+                results.push({
+                  title: links[i].title,
+                  url: links[i].href,
+                  snippet: snippets[i] || ""
+                });
+              }
+              return resolve(jsonResult({ results }));
+            } catch (err) {
+              return resolve(jsonResult({ results: [], error: err.message }));
+            }
+          });
+        }).on("error", (err) => {
+          resolve(jsonResult({ results: [], error: err.message }));
+        });
+      });
+    }
+  );
+
+  // --- Fetch URL and extract readable text ---
+  reg(
+    mcp,
+    "web_fetch",
+    {
+      title: "Fetch URL content as text",
+      description: "Fetch a URL and extract readable text by stripping HTML tags. Returns the text content up to max_chars.",
+      inputSchema: {
+        url: z.string().describe("URL to fetch"),
+        max_chars: z.number().min(100).max(50000).default(10000).describe("Maximum characters to return (100-50000, default 10000)")
+      }
+    },
+    async (args) => fetchUrl(args)
+  );
+}
+
+// --- Shared URL fetch helper (handles redirects, strips HTML) ---
+async function fetchUrl(args) {
+  const targetUrl = String(args.url || "").trim();
+  const maxChars = Math.max(100, Math.min(50000, args.max_chars ?? 10000));
+
+  if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+    return jsonResult({ error: "URL must start with http:// or https://" });
+  }
+
+  return new Promise((resolve) => {
+    const urlObj = new URL(targetUrl);
+    const opts = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      headers: { "User-Agent": "LCA/1.0", "Accept": "text/html,text/plain" }
+    };
+
+    const req = https.get(opts, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+        const loc = res.headers.location;
+        if (loc) {
+          try {
+            const redirUrl = new URL(loc, targetUrl).href;
+            return resolve(fetchUrl({ url: redirUrl, max_chars: maxChars }));
+          } catch { /* fall through */ }
+        }
+      }
+
+      let body = "";
+      res.on("data", (chunk) => {
+        body += chunk;
+        if (body.length > maxChars * 8) res.destroy();
+      });
+      res.on("end", () => {
+        try {
+          let text = body
+            .replace(/<script[\s\S]*?<\/script>/gi, "")
+            .replace(/<style[\s\S]*?<\/style>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, "\"")
+            .replace(/&#x27;/g, "'")
+            .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
+            .replace(/\s+/g, " ")
+            .trim();
+
+          const truncated = text.length > maxChars;
+          if (truncated) text = text.slice(0, maxChars) + "...";
+
+          return resolve(jsonResult({ url: targetUrl, content: text, length: text.length, truncated }));
+        } catch (err) {
+          return resolve(jsonResult({ url: targetUrl, content: "", error: err.message }));
+        }
+      });
+    });
+
+    req.on("error", (err) => {
+      resolve(jsonResult({ url: targetUrl, content: "", error: err.message }));
+    });
+    req.setTimeout(15000, () => {
+      req.destroy();
+      resolve(jsonResult({ url: targetUrl, content: "", error: "Request timed out after 15s" }));
+    });
+  });
+}
+
+// ----------------------------------------------------------------------------
+// Verification tools (v2.9)
+// ----------------------------------------------------------------------------
+function registerVerifyTools(mcp) {
+  reg(
+    mcp,
+    "verify_done",
+    {
+      title: "Verify task completion checklist",
+      description: "Lightweight x-harness alternative. Takes a checklist array of items and an evidence object. Validates each checklist item against provided evidence. Returns {status, failures, score}.",
+      inputSchema: {
+        checklist: z.array(z.string()).describe("Array of checklist items (e.g. ['All tests pass', 'Code compiles', 'Documentation updated'])"),
+        evidence: z.record(z.string(), z.string()).describe("Evidence object mapping checklist items or labels to their evidence/status (e.g. {'tests': '14/14 passed', 'compile': 'tsc --noEmit succeeded'})")
+      }
+    },
+    async (args) => {
+      const checklist = args.checklist || [];
+      const evidence = args.evidence || {};
+
+      if (!checklist.length) {
+        return jsonResult({ status: "withheld", failures: ["No checklist items provided"], score: 0 });
+      }
+
+      const failures = [];
+      const passed = [];
+
+      for (const item of checklist) {
+        const itemKey = item.toLowerCase();
+        let found = false;
+
+        // Match checklist item against evidence keys
+        for (const [key, value] of Object.entries(evidence)) {
+          const keyLower = key.toLowerCase();
+          const valLower = String(value).toLowerCase();
+
+          // Check if key matches item or value indicates success
+          if (
+            itemKey.includes(keyLower) ||
+            keyLower.includes(itemKey) ||
+            valLower.includes("pass") ||
+            valLower.includes("ok") ||
+            valLower.includes("success") ||
+            valLower.includes("complete") ||
+            valLower.includes("done") ||
+            valLower.includes("succeeded") ||
+            valLower.match(/\d+\/\d+\s*(passed|tests)/)
+          ) {
+            found = true;
+            break;
+          }
+        }
+
+        if (found) {
+          passed.push(item);
+        } else {
+          failures.push(item);
+        }
+      }
+
+      const total = checklist.length;
+      const score = total > 0 ? Math.round((passed.length / total) * 100) : 0;
+      const status = failures.length === 0 ? "accepted" : "withheld";
+
+      return jsonResult({ status, failures, score, passed: passed.length, total });
+    }
+  );
 }
