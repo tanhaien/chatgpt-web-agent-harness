@@ -48,7 +48,7 @@ const CONFIG_ID = String(process.env.AGENT_CONFIG_ID || "");
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WORKSPACE = path.resolve(APP_DIR, "..", "agent-workspace");
-const PRIMARY_ROOT = path.resolve(process.env.AGENT_WORKSPACE || DEFAULT_WORKSPACE);
+let PRIMARY_ROOT = path.resolve(process.env.AGENT_WORKSPACE || DEFAULT_WORKSPACE);
 const STARTUP_PROFILE = (() => {
   try {
     return JSON.parse(readFileSync(path.join(PRIMARY_ROOT, ".agent", "profile.json"), "utf8"));
@@ -57,7 +57,7 @@ const STARTUP_PROFILE = (() => {
   }
 })();
 const EXTRA_ROOTS = parseExtraRoots();
-const ROOTS = dedupe([PRIMARY_ROOT, ...EXTRA_ROOTS]);
+let ROOTS = dedupe([PRIMARY_ROOT, ...EXTRA_ROOTS]);
 
 // "safe" (default): file/command tools are confined to roots, destructive
 // commands and absolute Windows paths inside commands are blocked.
@@ -435,6 +435,7 @@ function createMcpServer() {
   registerWebSearchTools(mcp);    // v2.9
   registerVerifyTools(mcp);       // v2.9
   registerSandboxTools(mcp);      // v2.9
+  registerWorkspaceTools(mcp);    // v2.9
   return mcp;
 }
 
@@ -5469,6 +5470,40 @@ function registerVerifyTools(mcp) {
       const status = failures.length === 0 ? "accepted" : "withheld";
 
       return jsonResult({ status, failures, score, passed: passed.length, total });
+    }
+  );
+}
+
+function registerWorkspaceTools(mcp) {
+  reg(
+    mcp,
+    "set_workspace",
+    {
+      title: "Set workspace",
+      description: "Switch the workspace root to a different project directory. Call this at the start of a session before working on a specific project.",
+      inputSchema: { path: z.string().describe("Absolute path to the project directory") }
+    },
+    async ({ path: newPath }) => {
+      if (!newPath) {
+        return jsonResult({ workspace: PRIMARY_ROOT, roots: ROOTS, hint: "Provide 'path' to switch." });
+      }
+      const resolved = path.resolve(newPath);
+      if (!existsSync(resolved)) {
+        return { content: [{ type: "text", text: `ERROR: path does not exist: ${resolved}` }], isError: true };
+      }
+      PRIMARY_ROOT = resolved;
+      ROOTS = dedupe([PRIMARY_ROOT, ...EXTRA_ROOTS]);
+      try {
+        const envPath = path.resolve(APP_DIR, ".env");
+        const envContent = readFileSync(envPath, "utf-8");
+        const updated = envContent.replace(/^AGENT_WORKSPACE=.*/m, `AGENT_WORKSPACE=${resolved}`);
+        writeFileSync(envPath, updated);
+      } catch (e) {
+        log(`set_workspace: .env update skipped (${e.message})`);
+      }
+      try { mcp.server.sendNotification("notifications/roots/listChanged", {}); } catch (e) {}
+      log(`workspace switched to: ${resolved}`);
+      return jsonResult({ workspace: PRIMARY_ROOT, roots: ROOTS, status: "switched" });
     }
   );
 }

@@ -8,16 +8,18 @@
 ## 1. Quick Start / Khởi Động Nhanh
 
 ### EN
-1. Verify the tunnel is alive: call `ping`. If no response, stop — the agent cannot work.
-2. Check workspace: call `workspace_info` to confirm the repo root and current branch.
-3. For any coding task beyond a trivial one-liner, go to **Section 2 — Required Workflow**.
-4. Review `policy` / `profile` if they exist in the workspace (they contain project-specific rules).
+1. ✅ **Set workspace** — call `set_workspace` with the repo path (e.g. `set_workspace("/home/ta/vn-data-pipeline")`)
+2. Verify tunnel alive: call `ping`. If no response, stop — agent cannot work.
+3. Check workspace: call `workspace_info` confirm root current branch.
+4. any coding task beyond trivial one-liner, go to **Section 2 Required Workflow**.
+5. Review `policy` / `profile` if exist in workspace contain project-specific rules).
 
 ### VN
-1. Kiểm tra tunnel còn sống: gọi `ping`. Nếu không phản hồi, dừng lại — agent không thể làm việc.
-2. Kiểm tra workspace: gọi `workspace_info` để xác nhận thư mục gốc và branch hiện tại.
-3. Với bất kỳ tác vụ coding nào không phải one-liner, chuyển sang **Mục 2 — Required Workflow**.
-4. Đọc `policy` / `profile` nếu có trong workspace (chúng chứa quy tắc riêng của dự án).
+1. ✅ **Đặt workspace** — gọi `set_workspace` với đường dẫn repo (vd: `set_workspace("/home/ta/vn-data-pipeline")`)
+2. Kiểm tra tunnel còn sống: gọi `ping`. Nếu không phản hồi, dừng lại agent không thể làm việc.
+3. Kiểm tra workspace: gọi `workspace_info` để xác nhận thư mục gốc và branch hiện tại.
+4. Với bất kỳ tác vụ coding nào không phải one-liner, chuyển sang **Mục 2 Required Workflow**.
+5. Đọc `policy` / `profile` nếu có trong workspace (chúng chứa quy tắc riêng của dự án).
 
 ---
 
