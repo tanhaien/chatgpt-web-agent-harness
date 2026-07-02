@@ -11,7 +11,7 @@
   "main": "desktop/main.mjs",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check standalone-app.mjs && node --check desktop/main.mjs && node --check desktop/preload.mjs && node --check core/security.mjs && node --check core/permission-broker.mjs && node --check core/redaction.mjs && node --check core/thread-store.mjs && node --check core/secret-store.mjs && node --check core/license-service.mjs && node --check core/integrity-service.mjs && tsc --noEmit",
+    "check": "node --check server.mjs && node --check standalone-app.mjs && node --check desktop/main.mjs && node --check desktop/preload.mjs && node --check desktop/privileged-actions.mjs && node --check core/security.mjs && node --check core/permission-broker.mjs && node --check core/redaction.mjs && node --check core/thread-store.mjs && node --check core/secret-store.mjs && node --check core/license-service.mjs && node --check core/integrity-service.mjs && tsc --noEmit",
     "ui:build": "vite build",
     "desktop:dev": "electron .",
     "desktop:pack": "npm run ui:build && electron-builder --dir",

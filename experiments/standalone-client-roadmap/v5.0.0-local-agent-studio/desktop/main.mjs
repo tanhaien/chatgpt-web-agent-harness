@@ -1,8 +1,9 @@
-import { app, BrowserWindow, dialog, shell, session } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell, session } from "electron";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildPrivilegedRequest } from "./privileged-actions.mjs";
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = dirname(APP_DIR);
@@ -12,6 +13,7 @@ const port = Number(process.env.LCA_STUDIO_PORT || manifest.defaultPort || 5182)
 const baseUrl = `http://${host}:${port}`;
 let serverProcess = null;
 let mainWindow = null;
+let studioToken = "";
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
@@ -25,9 +27,11 @@ app.on("second-instance", () => {
 app.whenReady().then(async () => {
   try {
     hardenSession();
+    installIpcHandlers();
     const nodeRuntime = await verifyNodeRuntime();
     serverProcess = startServer(nodeRuntime);
     await waitForHealth();
+    studioToken = await readStudioToken();
     mainWindow = createWindow();
     await mainWindow.loadURL(baseUrl);
   } catch (error) {
@@ -84,6 +88,36 @@ function hardenSession() {
         "X-Local-Agent-Studio": ["desktop"]
       }
     });
+  });
+}
+
+function installIpcHandlers() {
+  ipcMain.handle("lca:privileged", async (event, request) => {
+    if (!isTrustedLocalUrl(event.senderFrame?.url || "")) {
+      return { ok: false, status: 403, error: "Untrusted renderer origin." };
+    }
+    if (!studioToken) return { ok: false, status: 503, error: "Studio token is not ready." };
+    try {
+      const spec = buildPrivilegedRequest(request);
+      const response = await fetch(`${baseUrl}${spec.path}`, {
+        method: spec.method,
+        headers: {
+          "content-type": "application/json",
+          "x-lca-studio-token": studioToken
+        },
+        body: JSON.stringify(spec.body || {})
+      });
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : {};
+      return {
+        ok: response.ok,
+        status: response.status,
+        data,
+        error: response.ok ? "" : data.error || response.statusText
+      };
+    } catch (error) {
+      return { ok: false, status: 500, error: error instanceof Error ? error.message : String(error) };
+    }
   });
 }
 
@@ -157,6 +191,17 @@ async function waitForHealth() {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw lastError || new Error("Local Agent Studio server did not start.");
+}
+
+async function readStudioToken() {
+  const response = await fetch(`${baseUrl}/`);
+  if (!response.ok) throw new Error(`Unable to read Studio session token: ${response.status}`);
+  const html = await response.text();
+  const token =
+    html.match(/<meta name="lca-studio-token" content="([A-Za-z0-9_-]+)" \/>/)?.[1] ||
+    html.match(/const STUDIO_TOKEN="([A-Za-z0-9_-]+)"/)?.[1];
+  if (!token) throw new Error("Studio session token was not found in same-origin HTML.");
+  return token;
 }
 
 function stopServer() {

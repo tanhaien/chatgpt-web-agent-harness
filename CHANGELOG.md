@@ -35,6 +35,10 @@ follows [Semantic Versioning](https://semver.org/).
   manual tool calls, provider-key changes, managed server control, customer
   updates, approval mutations, and support-bundle exports. These routes now
   require structured intent confirmation and write redacted audit metadata.
+- Studio v5 desktop now exposes a typed IPC bridge for privileged actions. The
+  Electron main process maps renderer requests through a small allowlist,
+  injects the local session token and structured intent, and rejects untrusted
+  renderer origins.
 
 ## [4.4.0-pro] - 2026-07-01
 

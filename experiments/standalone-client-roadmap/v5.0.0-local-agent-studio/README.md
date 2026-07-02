@@ -12,6 +12,9 @@ workspace controls, diagnostics, and commercial-release guardrails.
 - React + Vite renderer with virtualized chat messages for long threads.
 - Electron desktop shell with `nodeIntegration=false`, `contextIsolation=true`,
   renderer sandboxing, denied permission prompts, and local-only navigation.
+- Typed desktop IPC bridge for privileged actions. The renderer can request only
+  allowlisted actions; the Electron main process owns the local session token,
+  injects structured intent, and rejects untrusted renderer origins.
 - Workspace profiles, Skills controls, dashboard metrics, approvals, file
   preview, Git diff, support bundle export, and guarded customer update flow.
 - Provider key setup from the app UI for OpenAI and Anthropic, backed by a local
@@ -92,6 +95,10 @@ browser-origin mistakes, and accidental direct API calls cannot silently perform
 high-risk actions. Permission audit entries record action, risk, route, target,
 and allow/deny status, but not raw request payloads or secrets.
 
+In the desktop app, privileged UI actions use the typed IPC bridge instead of
+constructing arbitrary privileged URLs in the renderer. Browser preview keeps a
+fetch fallback for development.
+
 ## Build Desktop Package
 
 ```powershell
@@ -145,6 +152,9 @@ workspace controls, diagnostics và các lớp kiểm soát để phát hành th
 - Renderer React + Vite với chat message được virtualize để thread dài không kéo lag.
 - Electron desktop shell với `nodeIntegration=false`, `contextIsolation=true`,
   renderer sandbox, từ chối permission prompt và chỉ cho điều hướng local.
+- Typed desktop IPC bridge cho action có quyền cao. Renderer chỉ được yêu cầu
+  các action trong allowlist; Electron main process giữ local session token,
+  tự gắn structured intent và từ chối renderer origin không tin cậy.
 - Workspace profiles, Skills controls, dashboard metrics, approvals, file
   preview, Git diff, support bundle export và guarded customer update flow.
 - Setup provider key ngay trong UI cho OpenAI và Anthropic, dùng local encrypted
@@ -220,6 +230,10 @@ Các API có quyền cao cần intent có cấu trúc:
 browser origin hoặc việc gọi API trực tiếp không thể âm thầm chạy hành động rủi
 ro cao. Permission audit chỉ ghi action, risk, route, target và trạng thái
 allow/deny; không ghi raw payload hoặc secret.
+
+Trong desktop app, UI dùng typed IPC bridge cho action có quyền cao thay vì tự
+tạo URL nhạy cảm trong renderer. Browser preview vẫn có fetch fallback để dev
+dễ chạy.
 
 ## Build Desktop Package
 

@@ -24,17 +24,20 @@ The Preview implements these baseline controls:
 8. The Electron renderer runs with `nodeIntegration=false`,
    `contextIsolation=true`, sandboxing enabled, denied permission prompts, and
    local-only navigation.
-9. Provider keys can be stored in a local AES-256-GCM encrypted vault; APIs
+9. Desktop privileged actions go through a typed IPC bridge. The Electron main
+   process owns the Studio token, maps actions through an allowlist, injects
+   structured intent, and validates the renderer origin before proxying.
+10. Provider keys can be stored in a local AES-256-GCM encrypted vault; APIs
    return only metadata, and environment keys remain readonly operator-managed
    overrides.
-10. Support bundles recursively redact credentials and omit raw tool arguments
+11. Support bundles recursively redact credentials and omit raw tool arguments
    and results from the event list.
-11. SQLite persists threads without putting API credentials in the database.
+12. SQLite persists threads without putting API credentials in the database.
 
 This is defense in depth, not an operating-system sandbox. The Stable desktop
-app still needs typed IPC, OS-enforced workspace boundaries, network allowlists,
-signed installers, signed update manifests, and platform code signing before
-customer release.
+app still needs typed IPC coverage for every privileged workflow, OS-enforced
+workspace boundaries, network allowlists, signed installers, signed update
+manifests, and platform code signing before customer release.
 
 ### Commercial License Design
 
@@ -85,7 +88,8 @@ runtime isolation, and transparent release evidence are all required.
 
 ### Planned Stable Controls
 
-- Typed, allowlisted IPC instead of privileged localhost APIs.
+- Expand typed, allowlisted IPC to every privileged desktop workflow and reduce
+  direct renderer access to localhost APIs.
 - One-time approvals backed by the permission broker for all destructive,
   network, install, and out-of-root actions.
 - OS keychain storage for provider credentials and license tokens, replacing
@@ -120,10 +124,13 @@ Preview hiện có các lớp bảo vệ cơ bản:
    broker ở server. Audit chỉ ghi metadata, không ghi raw request payload.
 8. Electron renderer chạy với `nodeIntegration=false`, `contextIsolation=true`,
    sandbox bật, permission prompt bị từ chối và chỉ cho điều hướng local.
-9. Provider key có thể lưu trong local vault mã hóa AES-256-GCM; API chỉ trả
+9. Desktop privileged action đi qua typed IPC bridge. Electron main process giữ
+   Studio token, map action qua allowlist, tự gắn structured intent và kiểm tra
+   renderer origin trước khi proxy.
+10. Provider key có thể lưu trong local vault mã hóa AES-256-GCM; API chỉ trả
    metadata, còn key từ env vẫn là readonly override do operator quản lý.
-10. Support Bundle redaction đệ quy và bỏ raw tool args/results khỏi event list.
-11. SQLite lưu thread nhưng không lưu API credential.
+11. Support Bundle redaction đệ quy và bỏ raw tool args/results khỏi event list.
+12. SQLite lưu thread nhưng không lưu API credential.
 
 Đây là defense in depth, chưa phải sandbox cấp hệ điều hành. Trước khi phát hành
 Stable cho khách, desktop app vẫn cần typed IPC, workspace boundary do hệ điều
@@ -177,7 +184,8 @@ code signing, runtime isolation và bằng chứng release minh bạch.
 
 ### Stable Còn Cần Gì
 
-- Typed IPC có allowlist thay cho privileged localhost APIs.
+- Mở rộng typed IPC có allowlist cho toàn bộ privileged desktop workflow và giảm
+  quyền renderer gọi trực tiếp localhost APIs.
 - One-time approval dựa trên permission broker cho destructive, network,
   install và out-of-root actions.
 - OS keychain để lưu provider credential và license token, thay cho local

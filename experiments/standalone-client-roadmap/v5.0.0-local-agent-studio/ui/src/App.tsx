@@ -84,6 +84,15 @@ type ModelPreset = {
 const token = document.querySelector<HTMLMetaElement>('meta[name="lca-studio-token"]')?.content || "";
 const intent = (action: string) => ({ action, confirm: action });
 
+declare global {
+  interface Window {
+    localAgentStudio?: {
+      platform?: string;
+      privileged?: (action: string, payload?: Record<string, unknown>) => Promise<{ ok: boolean; status: number; data?: unknown; error?: string }>;
+    };
+  }
+}
+
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...options,
@@ -97,6 +106,13 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const data = text ? JSON.parse(text) : {};
   if (!response.ok) throw new Error(data.error || response.statusText);
   return data;
+}
+
+async function privilegedApi<T>(action: string, payload: Record<string, unknown>, fallback: () => Promise<T>): Promise<T> {
+  if (!window.localAgentStudio?.privileged) return fallback();
+  const response = await window.localAgentStudio.privileged(action, payload);
+  if (!response.ok) throw new Error(response.error || `Privileged action failed (${response.status})`);
+  return response.data as T;
 }
 
 function itemKey(item: ThreadItem, index: number) {
@@ -239,21 +255,28 @@ export function App() {
 
   async function startServer() {
     const workspace = window.prompt("Workspace path for MCP server", "");
-    const data = await api<{ endpoint: string }>("/api/server/start", {
+    const payload = { workspace: workspace || undefined, mode: "safe", policy: "balanced" };
+    const data = await privilegedApi<{ endpoint: string }>("mcpServer:start", payload, () => api("/api/server/start", {
       method: "POST",
-      body: JSON.stringify({ workspace: workspace || undefined, mode: "safe", policy: "balanced", intent: intent("mcp-server:start") })
-    });
+      body: JSON.stringify({ ...payload, intent: intent("mcp-server:start") })
+    }));
     setEndpoint(data.endpoint);
     setNotice(`MCP server running at ${data.endpoint}`);
   }
 
   async function stopServer() {
-    const data = await api<{ stopped?: boolean; reason?: string }>("/api/server/stop", { method: "POST", body: JSON.stringify({ intent: intent("mcp-server:stop") }) });
+    const data = await privilegedApi<{ stopped?: boolean; reason?: string }>("mcpServer:stop", {}, () => api("/api/server/stop", {
+      method: "POST",
+      body: JSON.stringify({ intent: intent("mcp-server:stop") })
+    }));
     setNotice(data.stopped ? "MCP server stopped" : data.reason || "No managed server");
   }
 
   async function supportBundle() {
-    const data = await api<{ path: string }>("/api/support-bundle", { method: "POST", body: JSON.stringify({ intent: intent("support-bundle:export") }) });
+    const data = await privilegedApi<{ path: string }>("supportBundle:export", {}, () => api("/api/support-bundle", {
+      method: "POST",
+      body: JSON.stringify({ intent: intent("support-bundle:export") })
+    }));
     setNotice(`Support bundle: ${data.path}`);
   }
 
@@ -276,10 +299,11 @@ export function App() {
   async function saveProviderKey(providerId: "openai" | "anthropic") {
     const value = window.prompt(`${providerId} API key`, "");
     if (!value) return;
-    const status = await api<ProviderStatus>(`/api/secrets/${providerId}`, {
+    const payload = { provider: providerId, value, label: `${providerId} key` };
+    const status = await privilegedApi<ProviderStatus>("providerKey:set", payload, () => api(`/api/secrets/${providerId}`, {
       method: "POST",
-      body: JSON.stringify({ value, label: `${providerId} key`, intent: intent("provider-key:set") })
-    });
+      body: JSON.stringify({ ...payload, intent: intent("provider-key:set") })
+    }));
     setProviderKeys((current) => ({ ...current, [providerId]: status }));
     await boot();
     setNotice(`${providerId} key saved`);
@@ -287,7 +311,11 @@ export function App() {
 
   async function deleteProviderKey(providerId: "openai" | "anthropic") {
     if (!window.confirm(`Delete saved ${providerId} key from this device?`)) return;
-    await api<{ ok: boolean }>(`/api/secrets/${providerId}`, { method: "DELETE", body: JSON.stringify({ intent: intent("provider-key:delete") }) });
+    const payload = { provider: providerId };
+    await privilegedApi<{ ok: boolean }>("providerKey:delete", payload, () => api(`/api/secrets/${providerId}`, {
+      method: "DELETE",
+      body: JSON.stringify({ intent: intent("provider-key:delete") })
+    }));
     const status = await api<ProviderStatus>(`/api/secrets/${providerId}`);
     setProviderKeys((current) => ({ ...current, [providerId]: status }));
     await boot();
