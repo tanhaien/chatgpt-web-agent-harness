@@ -140,6 +140,31 @@ jobs:
       - run: npm run eval
         working-directory: server
 
+  studio-v5:
+    name: Studio v5 security (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: experiments/standalone-client-roadmap/v5.0.0-local-agent-studio/package-lock.json
+      - name: Install locked Studio dependencies
+        run: npm ci
+        working-directory: experiments/standalone-client-roadmap/v5.0.0-local-agent-studio
+      - name: Verify Studio source and security boundaries
+        run: |
+          npm run check
+          npm test
+          npm run security:audit
+          npm audit --omit=dev
+        working-directory: experiments/standalone-client-roadmap/v5.0.0-local-agent-studio
+
   tray-windows:
     name: Tray app (Windows)
     runs-on: windows-latest

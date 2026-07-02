@@ -8,25 +8,36 @@ $Launcher = Join-Path $Root "windows-launcher"
 $Publish = Join-Path $Launcher "publish\win-x64"
 $Exe = Join-Path $Publish "LocalAgentStudio.exe"
 $SharedRuntime = Join-Path $Root "shared\standalone-app.mjs"
-$Versions = @(
+$LegacyVersions = @(
   "v4.5.0-pro-local-client-mvp",
   "v4.6.0-pro-model-router",
   "v4.7.0-pro-workspace-profiles",
   "v4.8.0-pro-agent-studio-ui",
-  "v4.9.0-pro-packaging",
+  "v4.9.0-pro-packaging"
+)
+$Versions = @(
+  $LegacyVersions
   "v5.0.0-local-agent-studio"
 )
 
-foreach ($Version in $Versions) {
+foreach ($Version in $LegacyVersions) {
   $VersionDir = Join-Path $Root $Version
   Copy-Item -LiteralPath $SharedRuntime -Destination (Join-Path $VersionDir "standalone-app.mjs") -Force
   Write-Host "[runtime] $Version"
+}
+
+foreach ($Version in $Versions) {
+  $VersionDir = Join-Path $Root $Version
   if (-not $SkipInstall) {
     Write-Host "[install] $Version"
     Push-Location $VersionDir
     try {
       npm install
       npm run check
+      if ($Version -eq "v5.0.0-local-agent-studio") {
+        npm test
+        npm run security:audit
+      }
     } finally {
       Pop-Location
     }

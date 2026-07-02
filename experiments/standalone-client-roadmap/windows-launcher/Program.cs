@@ -39,15 +39,49 @@ static async Task<int> RunProcess(string fileName, string arguments, string work
     return process.ExitCode;
 }
 
-static async Task<bool> WaitForHttp(string url)
+static async Task<string?> ReadProcessOutput(string fileName, string arguments, string workingDirectory)
+{
+    try
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        using var process = Process.Start(psi);
+        if (process == null) return null;
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return process.ExitCode == 0 ? stdout.Trim() : null;
+    }
+    catch
+    {
+        return null;
+    }
+}
+
+static async Task<bool> WaitForHttp(string url, string? expectedVersion, Process node)
 {
     using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
     for (var i = 0; i < 30; i++)
     {
+        if (node.HasExited) return false;
         try
         {
             using var res = await client.GetAsync(url);
-            if (res.IsSuccessStatusCode) return true;
+            if (res.IsSuccessStatusCode)
+            {
+                using var health = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+                var reported = health.RootElement.TryGetProperty("version", out var versionProperty)
+                    ? versionProperty.GetString()
+                    : null;
+                if (string.Equals(reported, expectedVersion, StringComparison.Ordinal)) return true;
+            }
         }
         catch
         {
@@ -73,6 +107,10 @@ using var manifestDoc = JsonDocument.Parse(await File.ReadAllTextAsync(manifestP
 var root = manifestDoc.RootElement;
 var product = root.TryGetProperty("productName", out var productProp) ? productProp.GetString() : "Local Agent Studio";
 var version = root.TryGetProperty("version", out var versionProp) ? versionProp.GetString() : "unknown";
+var minimumNodeVersionText = root.TryGetProperty("minimumNodeVersion", out var minimumNodeVersionProp)
+    ? minimumNodeVersionProp.GetString() ?? "18.0.0"
+    : "18.0.0";
+if (!Version.TryParse(minimumNodeVersionText, out var minimumNodeVersion)) minimumNodeVersion = new Version(18, 0, 0);
 var port = Environment.GetEnvironmentVariable("LCA_STUDIO_PORT");
 if (string.IsNullOrWhiteSpace(port))
 {
@@ -84,10 +122,26 @@ Console.WriteLine($"{product} {version}");
 Console.WriteLine($"Version folder: {versionDir}");
 Console.WriteLine($"URL: http://127.0.0.1:{port}");
 
+var nodeVersionText = await ReadProcessOutput("node", "--version", versionDir);
+var normalizedNodeVersion = nodeVersionText?.TrimStart('v').Split('-')[0];
+if (normalizedNodeVersion == null || !Version.TryParse(normalizedNodeVersion, out var nodeVersion))
+{
+    Console.Error.WriteLine($"Node.js {minimumNodeVersion}+ is required but node was not found.");
+    Console.ReadKey(intercept: true);
+    return 1;
+}
+if (nodeVersion < minimumNodeVersion)
+{
+    Console.Error.WriteLine($"Node.js {minimumNodeVersion}+ is required. Found {nodeVersionText}.");
+    Console.ReadKey(intercept: true);
+    return 1;
+}
+Console.WriteLine($"Node.js: {nodeVersionText}");
+
 if (!Directory.Exists(Path.Combine(versionDir, "node_modules")))
 {
-    Console.WriteLine("node_modules not found. Running npm install...");
-    var npmExit = await RunProcess("cmd.exe", "/c npm install", versionDir);
+    Console.WriteLine("node_modules not found. Running locked dependency install...");
+    var npmExit = await RunProcess("npm.cmd", "ci --ignore-scripts --no-fund", versionDir);
     if (npmExit != 0)
     {
         Console.Error.WriteLine($"npm install failed with exit code {npmExit}.");
@@ -98,12 +152,13 @@ if (!Directory.Exists(Path.Combine(versionDir, "node_modules")))
 
 var server = new ProcessStartInfo
 {
-    FileName = "cmd.exe",
-    Arguments = "/c node server.mjs",
+    FileName = "node",
+    Arguments = "server.mjs",
     WorkingDirectory = versionDir,
     UseShellExecute = false,
     RedirectStandardOutput = false,
-    RedirectStandardError = false
+    RedirectStandardError = false,
+    CreateNoWindow = false
 };
 
 using var node = Process.Start(server);
@@ -114,8 +169,27 @@ if (node == null)
     return 1;
 }
 
+void StopNode()
+{
+    try
+    {
+        if (!node.HasExited) node.Kill(entireProcessTree: true);
+    }
+    catch
+    {
+        // Best effort during process shutdown.
+    }
+}
+
+Console.CancelKeyPress += (_, eventArgs) =>
+{
+    eventArgs.Cancel = true;
+    StopNode();
+};
+AppDomain.CurrentDomain.ProcessExit += (_, _) => StopNode();
+
 var url = $"http://127.0.0.1:{port}";
-if (await WaitForHttp(url + "/api/health"))
+if (await WaitForHttp(url + "/api/health", version, node))
 {
     if (Environment.GetEnvironmentVariable("LCA_STUDIO_NO_BROWSER") == "1")
     {

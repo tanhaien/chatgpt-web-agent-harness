@@ -9,6 +9,11 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { IntegrityService, loadReleasePublicKey } from "./core/integrity-service.mjs";
+import { LicenseService, loadLicensePublicKey } from "./core/license-service.mjs";
+import { redactForSupport } from "./core/redaction.mjs";
+import { createStudioSecurity } from "./core/security.mjs";
+import { ThreadStore } from "./core/thread-store.mjs";
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_MCP_URL = process.env.MCP_ENDPOINT || "http://127.0.0.1:8787/mcp";
@@ -21,6 +26,18 @@ export function startStudio(manifest) {
   const host = process.env.LCA_STUDIO_HOST || "127.0.0.1";
   const port = Number(process.env.LCA_STUDIO_PORT || manifest.defaultPort || 5177);
   const storageDir = getStorageDir(manifest.version);
+  const security = createStudioSecurity({ host, port });
+  const threadStore = new ThreadStore(join(storageDir, "studio.db"));
+  const licenseService = new LicenseService({
+    storageDir,
+    manifest,
+    publicKeyPem: loadLicensePublicKey(APP_DIR)
+  });
+  const integrityService = new IntegrityService({
+    appDir: APP_DIR,
+    manifest,
+    publicKeyPem: loadReleasePublicKey(APP_DIR)
+  });
   const state = {
     manifest,
     storageDir,
@@ -32,14 +49,25 @@ export function startStudio(manifest) {
     events: [],
     activeProfile: null,
     serverProcess: null,
-    serverLogs: []
+    serverLogs: [],
+    security,
+    threadStore,
+    licenseService,
+    integrityService
   };
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${host}:${port}`);
-    if (url.pathname.startsWith("/api/")) return handleApi(req, res, url, state);
+    if (url.pathname.startsWith("/api/")) {
+      applyHeaders(res, security.apiHeaders());
+      const publicRoute = url.pathname === "/api/health";
+      const requireJson = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method || "GET");
+      const authorization = security.authorize(req, { publicRoute, requireJson });
+      if (!authorization.ok) return sendJson(res, authorization.status, { error: authorization.error });
+      return handleApi(req, res, url, state);
+    }
     if (url.pathname === "/" || url.pathname === "/index.html") {
-      return sendText(res, 200, renderHtml(manifest), "text/html; charset=utf-8");
+      return sendText(res, 200, renderHtml(manifest, security), "text/html; charset=utf-8", security.htmlHeaders());
     }
     return sendJson(res, 404, { error: "Not found" });
   });
@@ -49,6 +77,11 @@ export function startStudio(manifest) {
     console.log(`MCP endpoint default: ${state.mcpEndpoint}`);
     console.log(`Local data: ${storageDir}`);
   });
+
+  server.on("close", () => {
+    try { threadStore.close(); } catch {}
+  });
+  return { server, state };
 }
 
 async function handleApi(req, res, url, state) {
@@ -61,6 +94,35 @@ async function handleApi(req, res, url, state) {
     }
     if (url.pathname === "/api/model-presets") {
       return sendJson(res, 200, { presets: modelPresets(state.manifest) });
+    }
+    if (url.pathname === "/api/license") {
+      return sendJson(res, 200, state.licenseService.status());
+    }
+    if (url.pathname === "/api/license/activate" && req.method === "POST") {
+      const body = await readJson(req);
+      return sendJson(res, 200, state.licenseService.activate(body.token));
+    }
+    if (url.pathname === "/api/threads") {
+      if (req.method === "GET") {
+        return sendJson(res, 200, { threads: state.threadStore.listThreads({ limit: url.searchParams.get("limit") }) });
+      }
+      if (req.method === "POST") {
+        return sendJson(res, 201, { thread: state.threadStore.createThread(await readJson(req)) });
+      }
+    }
+    const threadMatch = url.pathname.match(/^\/api\/threads\/([^/]+)$/);
+    if (threadMatch) {
+      const id = decodeURIComponent(threadMatch[1]);
+      if (req.method === "GET") {
+        const thread = state.threadStore.requireThread(id);
+        return sendJson(res, 200, {
+          thread,
+          items: state.threadStore.listItems(id, { limit: url.searchParams.get("limit") || 100 })
+        });
+      }
+      if (req.method === "DELETE") {
+        return sendJson(res, 200, { thread: state.threadStore.archiveThread(id) });
+      }
     }
     if (url.pathname === "/api/connect" && req.method === "POST") {
       const body = await readJson(req);
@@ -87,12 +149,40 @@ async function handleApi(req, res, url, state) {
     if (url.pathname === "/api/chat" && req.method === "POST") {
       const body = await readJson(req);
       if (!body.message) throw new Error("message is required");
-      const result = await chatWithTools(state, {
-        message: body.message,
-        model: body.model || DEFAULT_MODEL,
-        provider: body.provider || DEFAULT_PROVIDER
-      });
-      return sendJson(res, 200, result);
+      const license = state.licenseService.status();
+      if (!license.allowed) return sendJson(res, 402, { error: license.reason, license });
+      const integrity = state.integrityService.status();
+      if (!integrity.allowed) return sendJson(res, 503, { error: integrity.reason, integrity });
+      const provider = body.provider || DEFAULT_PROVIDER;
+      const model = body.model || DEFAULT_MODEL;
+      const thread = body.threadId
+        ? state.threadStore.requireThread(body.threadId)
+        : state.threadStore.createThread({
+          title: body.message,
+          provider,
+          model,
+          workspace: state.activeProfile?.workspace || ""
+        });
+      const turn = state.threadStore.startTurn(thread.id);
+      state.threadStore.appendItem(thread.id, { turnId: turn.id, role: "user", content: body.message });
+      try {
+        const history = state.threadStore.recentMessages(thread.id, 60);
+        const result = await chatWithTools(state, { message: body.message, model, provider, history });
+        for (const event of result.timeline || []) {
+          state.threadStore.appendItem(thread.id, {
+            turnId: turn.id,
+            type: "tool",
+            content: event.result || "",
+            metadata: { tool: event.tool, args: event.args, isError: event.isError, ms: event.ms }
+          });
+        }
+        state.threadStore.appendItem(thread.id, { turnId: turn.id, role: "assistant", content: result.text || "" });
+        state.threadStore.finishTurn(turn.id);
+        return sendJson(res, 200, { ...result, threadId: thread.id, turnId: turn.id });
+      } catch (error) {
+        state.threadStore.finishTurn(turn.id, { status: "failed", error: error?.message || String(error) });
+        throw error;
+      }
     }
     if (url.pathname === "/api/events") {
       return sendJson(res, 200, { events: state.events.slice(-150) });
@@ -193,6 +283,9 @@ function healthPayload(state) {
     active_profile: state.activeProfile,
     repo_root: state.repoRoot,
     managed_server_pid: state.serverProcess?.pid || null,
+    security: { loopback_only: true, session_token_required: true, origin_guard: true },
+    license: publicLicenseStatus(state.licenseService.status()),
+    integrity: state.integrityService.status(),
     openai_key_present: Boolean(process.env.OPENAI_API_KEY),
     anthropic_key_present: Boolean(process.env.ANTHROPIC_API_KEY),
     ollama_url: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434"
@@ -226,6 +319,7 @@ function modelPresets(manifest) {
 }
 
 async function connectMcp(state, endpoint) {
+  validateMcpEndpoint(endpoint);
   if (state.client) await state.client.close().catch(() => {});
   const { Client, StreamableHTTPClientTransport } = await loadMcpSdk();
   const client = new Client({ name: "local-agent-studio", version: state.manifest.version });
@@ -272,6 +366,7 @@ async function callMcpTool(state, name, args) {
     result: toolResultText(result).slice(0, 50_000)
   };
   state.events.push(event);
+  if (state.events.length > 300) state.events.splice(0, state.events.length - 300);
   return { ok: !result.isError, ms: event.ms, result, event };
 }
 
@@ -282,12 +377,12 @@ async function chatWithTools(state, request) {
   return chatOpenAI(state, request);
 }
 
-async function chatOpenAI(state, { message, model }) {
+async function chatOpenAI(state, { message, model, history }) {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set");
   const timeline = [];
-  let input = [
+  const input = [
     { role: "system", content: systemPrompt(state.manifest) },
-    { role: "user", content: message }
+    ...providerMessages(history || [{ role: "user", content: message }])
   ];
   let response = null;
   for (let i = 0; i < MAX_TOOL_LOOPS; i++) {
@@ -306,7 +401,7 @@ async function chatOpenAI(state, { message, model }) {
     });
     const calls = (response.output || []).filter((item) => item.type === "function_call");
     if (!calls.length) return { provider: "openai", text: extractOpenAiText(response), timeline, raw: response };
-    input = [{ role: "system", content: systemPrompt(state.manifest) }, { role: "user", content: message }, ...response.output];
+    input.push(...response.output);
     for (const call of calls) {
       const args = parseJsonObject(call.arguments);
       const result = await callMcpTool(state, originalToolName(state, call.name), args);
@@ -317,10 +412,10 @@ async function chatOpenAI(state, { message, model }) {
   return { provider: "openai", text: extractOpenAiText(response) || "Stopped after max tool loops.", timeline, raw: response };
 }
 
-async function chatAnthropic(state, { message, model }) {
+async function chatAnthropic(state, { message, model, history }) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not set");
   const timeline = [];
-  const messages = [{ role: "user", content: message }];
+  const messages = providerMessages(history || [{ role: "user", content: message }]);
   let response = null;
   for (let i = 0; i < MAX_TOOL_LOOPS; i++) {
     response = await httpJson("https://api.anthropic.com/v1/messages", {
@@ -353,12 +448,12 @@ async function chatAnthropic(state, { message, model }) {
   return { provider: "anthropic", text: anthropicText(response) || "Stopped after max tool loops.", timeline, raw: response };
 }
 
-async function chatOllama(state, { message, model }) {
+async function chatOllama(state, { message, model, history }) {
   const base = (process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/+$/, "");
   const timeline = [];
   const messages = [
     { role: "system", content: systemPrompt(state.manifest) },
-    { role: "user", content: message }
+    ...providerMessages(history || [{ role: "user", content: message }])
   ];
   let response = null;
   for (let i = 0; i < MAX_TOOL_LOOPS; i++) {
@@ -479,6 +574,8 @@ async function startManagedServer(state, body) {
   const profile = state.activeProfile || {};
   const port = Number(body.port || profile.port || 8787);
   const dashboardPort = Number(body.dashboardPort || profile.dashboardPort || 8790);
+  assertPort(port, "MCP");
+  assertPort(dashboardPort, "dashboard");
   const workspace = resolve(body.workspace || profile.workspace || state.repoRoot);
   state.mcpEndpoint = `http://127.0.0.1:${port}/mcp`;
   state.dashboardUrl = `http://127.0.0.1:${dashboardPort}`;
@@ -595,14 +692,19 @@ async function writeSupportBundle(state) {
   const report = {
     createdAt: new Date().toISOString(),
     health: healthPayload(state),
-    server: status,
-    metrics,
-    approvals,
-    workspaceDoctor: doctor,
-    networkDoctor,
-    events: state.events.slice(-50),
+    server: redactForSupport(status),
+    metrics: redactForSupport(metrics),
+    approvals: redactForSupport(approvals),
+    workspaceDoctor: redactForSupport(doctor),
+    networkDoctor: redactForSupport(networkDoctor),
+    events: state.events.slice(-50).map((event) => ({
+      at: event.at,
+      tool: event.tool,
+      isError: event.isError,
+      ms: event.ms
+    })),
     tools: publicTools(state.tools),
-    redaction: "No API keys or environment secret values are included."
+    redaction: "Sensitive keys, credentials, private keys, authorization values, and secret-like strings are recursively redacted."
   };
   await writeFile(file, JSON.stringify(report, null, 2), "utf8");
   return { ok: true, path: file, report };
@@ -721,6 +823,31 @@ function normalizeSchema(schema) {
   return out;
 }
 
+function providerMessages(history) {
+  return (history || [])
+    .filter((item) => item && (item.role === "user" || item.role === "assistant"))
+    .map((item) => ({ role: item.role, content: String(item.content || "") }));
+}
+
+function validateMcpEndpoint(endpoint) {
+  let parsed;
+  try { parsed = new URL(endpoint); } catch { throw new Error("MCP endpoint must be a valid URL."); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("MCP endpoint must use HTTP or HTTPS.");
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const loopback = ["127.0.0.1", "localhost", "::1"].includes(host);
+  if (!loopback && process.env.LCA_ALLOW_REMOTE_MCP !== "1") {
+    throw new Error("Remote MCP endpoints are disabled. Set LCA_ALLOW_REMOTE_MCP=1 only for a trusted endpoint.");
+  }
+}
+
+function assertPort(value, label) {
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error(`Invalid ${label} port: ${value}`);
+  }
+}
+
 function parseJsonObject(value) {
   if (!value) return {};
   if (typeof value === "object") return value;
@@ -733,11 +860,15 @@ function parseJsonObject(value) {
 }
 
 async function readJson(req) {
-  let body = "";
+  const chunks = [];
+  let bytes = 0;
   for await (const chunk of req) {
-    body += chunk;
-    if (body.length > 2_000_000) throw new Error("Request body too large");
+    const buffer = Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > 2_000_000) throw new Error("Request body too large");
+    chunks.push(buffer);
   }
+  const body = Buffer.concat(chunks).toString("utf8");
   return body ? JSON.parse(body) : {};
 }
 
@@ -745,9 +876,13 @@ function sendJson(res, status, body) {
   sendText(res, status, JSON.stringify(body, null, 2), "application/json; charset=utf-8");
 }
 
-function sendText(res, status, body, type) {
-  res.writeHead(status, { "content-type": type, "cache-control": "no-store" });
+function sendText(res, status, body, type, headers = {}) {
+  res.writeHead(status, { "content-type": type, "cache-control": "no-store", ...headers });
   res.end(body);
+}
+
+function applyHeaders(res, headers) {
+  for (const [name, value] of Object.entries(headers || {})) res.setHeader(name, value);
 }
 
 function getStorageDir(version) {
@@ -784,8 +919,8 @@ async function runChild(fileName, args, cwd, timeoutMs = 5 * 60_000) {
         child.kill("SIGKILL");
       }
     }, timeoutMs);
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.stdout.on("data", (chunk) => { stdout = appendBoundedOutput(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = appendBoundedOutput(stderr, chunk); });
     child.on("error", (error) => {
       clearTimeout(timer);
       resolveRun({ code: 1, stdout, stderr: `${stderr}\n${error.message}`.trim() });
@@ -801,11 +936,26 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+function appendBoundedOutput(current, chunk, limit = 2_000_000) {
+  if (current.length >= limit) return current;
+  const next = current + String(chunk);
+  return next.length <= limit ? next : `${next.slice(0, limit)}\n[OUTPUT TRUNCATED]`;
+}
+
+function publicLicenseStatus(status) {
+  return {
+    allowed: Boolean(status?.allowed),
+    mode: status?.mode || "unknown",
+    edition: status?.edition || null,
+    reason: status?.reason || ""
+  };
+}
+
 function safeId(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 64) || "profile";
 }
 
-function renderHtml(manifest) {
+function renderHtml(manifest, security) {
   const features = new Set(manifest.features || []);
   const providers = manifest.providers || ["openai"];
   return `<!doctype html>
@@ -814,7 +964,7 @@ function renderHtml(manifest) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(manifest.productName)} ${escapeHtml(manifest.version)}</title>
-  <style>
+  <style nonce="${security.nonce}">
     :root{color-scheme:dark;--bg:#0b0f14;--panel:#111821;--panel2:#0f151d;--text:#e5edf7;--muted:#8ea0b8;--line:#223044;--accent:#28d7bd;--warn:#f7b955;--bad:#ff6b6b}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line);background:#0d131b}h1{font-size:18px;margin:0}h2{font-size:14px;margin:14px 0 8px;color:#b9c8dc}main{display:grid;grid-template-columns:330px minmax(0,1fr)430px;min-height:calc(100vh - 58px)}section{border-right:1px solid var(--line);padding:14px;min-width:0}section:last-child{border-right:0}label{display:block;color:var(--muted);font-size:12px;margin:10px 0 6px}input,textarea,select{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:9px 10px;font:inherit}textarea{min-height:128px;resize:vertical}button{background:var(--accent);color:#04110f;border:0;border-radius:6px;padding:9px 12px;font-weight:700;cursor:pointer;margin-top:10px}button.secondary{background:#1b2532;color:var(--text);border:1px solid var(--line)}.row{display:flex;gap:8px;align-items:center}.row>*{flex:1}.pill{display:inline-flex;gap:6px;color:var(--muted);border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:5px 9px;font-size:12px}.ok{color:var(--accent)}.bad{color:var(--bad)}.muted{color:var(--muted)}.box,.msg,.tool{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:9px}.tools,.timeline{display:flex;flex-direction:column;gap:8px;overflow:auto}.tools{max-height:calc(100vh - 360px)}.timeline{max-height:calc(100vh - 116px)}.chat{display:flex;flex-direction:column;gap:10px;height:calc(100vh - 86px)}.messages{flex:1;overflow:auto;display:flex;flex-direction:column;gap:10px;padding-right:4px}.msg{white-space:pre-wrap}.msg.user{border-color:#2c6a7a}.msg.agent{border-color:#246b5e}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 0;color:#c9d7e8;font-size:12px}.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{font-size:12px;color:#c9d7e8;border:1px solid var(--line);border-radius:999px;padding:4px 8px;background:#172131}@media(max-width:980px){main{grid-template-columns:1fr}section{border-right:0;border-bottom:1px solid var(--line)}.chat{height:auto;min-height:520px}}
   </style>
@@ -829,12 +979,14 @@ function renderHtml(manifest) {
       <button id="connect">Connect MCP</button> <button class="secondary" id="refresh">Refresh Tools</button>
       <div class="box"><b>Status</b><div id="status" class="muted">Not connected yet.</div></div>
       <h2>Features</h2><div class="chips">${(manifest.features || []).map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join("")}</div>
+      <h2>Threads</h2><button class="secondary" id="newThread">New</button> <button class="secondary" id="loadThreads">Refresh</button><div id="threads" class="box muted">No threads loaded.</div>
       ${features.has("profiles") ? `<h2>Profiles</h2><button class="secondary" id="saveProfile">Save</button> <button class="secondary" id="loadProfiles">Manage</button> <button class="secondary" id="exportProfiles">Export</button><div id="profiles" class="box muted">No profiles loaded.</div>` : ""}
       ${features.has("skills") ? `<h2>Skills</h2><button class="secondary" id="skills">List</button> <button class="secondary" id="readSkill">Read</button> <button class="secondary" id="validateSkills">Validate</button>` : ""}
       ${features.has("dashboard") ? `<h2>Operations</h2><button class="secondary" id="metrics">Metrics</button> <button class="secondary" id="approvals">Approvals</button>` : ""}
       ${features.has("fileViewer") ? `<button class="secondary" id="readFile">Read File</button> <button class="secondary" id="diff">Git Diff</button>` : ""}
       ${features.has("supportBundle") ? `<h2>Support</h2><button class="secondary" id="support">Export Support Bundle</button>` : ""}
       ${features.has("customerUpdateFlow") ? `<h2>Update</h2><button class="secondary" id="update">Run Guarded Update</button>` : ""}
+      <h2>License</h2><button class="secondary" id="license">Status / Activate</button>
       <h2>Tools</h2><div class="tools" id="tools"></div>
     </section>
     <section>
@@ -850,17 +1002,21 @@ function renderHtml(manifest) {
     </section>
     <section><h2>Tool Timeline</h2><div class="timeline" id="timeline"></div></section>
   </main>
-  <script>
-    const $=(id)=>document.getElementById(id); const state={tools:[]};
-    async function api(path,options={}){const res=await fetch(path,{...options,headers:{"content-type":"application/json",...(options.headers||{})}});const data=await res.json();if(!res.ok)throw new Error(data.error||res.statusText);return data}
+  <script nonce="${security.nonce}">
+    const STUDIO_TOKEN=${JSON.stringify(security.token)};
+    const $=(id)=>document.getElementById(id); const state={tools:[],threadId:null};
+    async function api(path,options={}){const res=await fetch(path,{...options,headers:{"content-type":"application/json","x-lca-studio-token":STUDIO_TOKEN,...(options.headers||{})}});const data=await res.json();if(!res.ok)throw new Error(data.error||res.statusText);return data}
     function addMessage(kind,text){const div=document.createElement("div");div.className="msg "+kind;div.textContent=text;$("messages").appendChild(div);$("messages").scrollTop=$("messages").scrollHeight;return div}
     function escapeHtml(text){return String(text).replace(/[&<>"']/g,(ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}[ch]))}
     function renderTools(){ $("tools").innerHTML=""; for(const tool of state.tools){const div=document.createElement("div");div.className="tool";div.innerHTML="<b>"+escapeHtml(tool.name)+"</b><span class='muted'>"+escapeHtml(tool.description||"")+"</span>";const btn=document.createElement("button");btn.className="secondary";btn.textContent="Call";btn.onclick=async()=>{const raw=prompt("JSON arguments for "+tool.name,"{}");if(raw===null)return;try{const args=JSON.parse(raw);const data=await api("/api/call-tool",{method:"POST",body:JSON.stringify({name:tool.name,arguments:args})});addTimeline(data.event||{tool:tool.name,args,isError:!data.ok,ms:data.ms,result:JSON.stringify(data.result,null,2)})}catch(err){addTimeline({tool:tool.name,args:{},isError:true,ms:0,result:err.message})}};div.appendChild(btn);$("tools").appendChild(div)}}
     function addTimeline(event){const div=document.createElement("div");div.className="box";const status=event.isError?"<span class='bad'>error</span>":"<span class='ok'>ok</span>";div.innerHTML="<b>"+escapeHtml(event.tool)+"</b> "+status+" <span class='muted'>"+(event.ms||0)+"ms</span><pre>"+escapeHtml(JSON.stringify(event.args||{},null,2))+"</pre><pre>"+escapeHtml(String(event.result||"").slice(0,4000))+"</pre>";$("timeline").prepend(div)}
-    async function health(){try{const data=await api("/api/health");$("health").innerHTML=data.openai_key_present||data.anthropic_key_present?"<span class='ok'>ready</span>":"<span class='bad'>missing API key</span>";if($("preset")){const p=await api("/api/model-presets");for(const item of p.presets||[]){const opt=document.createElement("option");opt.value=item.id;opt.textContent=item.label+" - "+item.provider+"/"+item.model;opt.dataset.provider=item.provider;opt.dataset.model=item.model;$("preset").appendChild(opt)}$("preset").onchange=()=>{const opt=$("preset").selectedOptions[0];if(opt&&opt.dataset.provider){$("provider").value=opt.dataset.provider;$("model").value=opt.dataset.model}}}}catch{$("health").innerHTML="<span class='bad'>offline</span>"}}
+    async function health(){try{const data=await api("/api/health");$("health").innerHTML=data.license?.allowed?(data.openai_key_present||data.anthropic_key_present?"<span class='ok'>ready</span>":"<span class='bad'>model setup needed</span>"):"<span class='bad'>license required</span>";if($("preset")){const p=await api("/api/model-presets");for(const item of p.presets||[]){const opt=document.createElement("option");opt.value=item.id;opt.textContent=item.label+" - "+item.provider+"/"+item.model;opt.dataset.provider=item.provider;opt.dataset.model=item.model;$("preset").appendChild(opt)}$("preset").onchange=()=>{const opt=$("preset").selectedOptions[0];if(opt&&opt.dataset.provider){$("provider").value=opt.dataset.provider;$("model").value=opt.dataset.model}}}await loadThreads()}catch{$("health").innerHTML="<span class='bad'>offline</span>"}}
     async function connect(){ $("status").textContent="Connecting..."; const data=await api("/api/connect",{method:"POST",body:JSON.stringify({endpoint:$("endpoint").value.trim()})}); state.tools=data.tools||[]; $("status").textContent="Connected to "+data.endpoint+". "+state.tools.length+" tools."; renderTools()}
     async function refreshTools(){const data=await api("/api/tools");state.tools=data.tools||[];$("status").textContent="Connected to "+data.endpoint+". "+state.tools.length+" tools.";renderTools()}
-    async function send(){const message=$("prompt").value.trim();if(!message)return;$("prompt").value="";addMessage("user",message);const last=addMessage("agent","Thinking...");try{const data=await api("/api/chat",{method:"POST",body:JSON.stringify({message,provider:$("provider").value,model:$("model").value.trim()})});last.textContent=data.text||"(no text)";for(const event of data.timeline||[])addTimeline(event)}catch(err){last.textContent="Error: "+err.message}}
+    async function send(){const message=$("prompt").value.trim();if(!message)return;$("prompt").value="";addMessage("user",message);const last=addMessage("agent","Thinking...");try{const data=await api("/api/chat",{method:"POST",body:JSON.stringify({threadId:state.threadId,message,provider:$("provider").value,model:$("model").value.trim()})});state.threadId=data.threadId;last.textContent=data.text||"(no text)";for(const event of data.timeline||[])addTimeline(event);await loadThreads()}catch(err){last.textContent="Error: "+err.message}}
+    async function loadThreads(){const data=await api("/api/threads?limit=50");const box=$("threads");box.textContent="";for(const thread of data.threads||[]){const btn=document.createElement("button");btn.className="secondary";btn.textContent=(thread.id===state.threadId?"* ":"")+thread.title;btn.title=thread.provider+"/"+thread.model;btn.onclick=()=>openThread(thread.id);box.appendChild(btn)}if(!(data.threads||[]).length)box.textContent="No threads."}
+    async function openThread(id){const data=await api("/api/threads/"+encodeURIComponent(id)+"?limit=100");state.threadId=id;$("messages").textContent="";$("timeline").textContent="";for(const item of data.items||[]){if(item.type==="message")addMessage(item.role==="user"?"user":"agent",item.content);else if(item.type==="tool")addTimeline({tool:item.metadata?.tool,args:item.metadata?.args,isError:item.metadata?.isError,ms:item.metadata?.ms,result:item.content})}await loadThreads()}
+    function newThread(){state.threadId=null;$("messages").textContent="";$("timeline").textContent="";$("status").textContent="New thread ready.";loadThreads()}
     async function saveProfile(){const name=prompt("Profile name","Default");if(!name)return;const workspace=prompt("Workspace path","")||"";const data=await api("/api/profiles",{method:"POST",body:JSON.stringify({name,workspace,endpoint:$("endpoint").value.trim(),provider:$("provider").value,model:$("model").value.trim(),mode:"safe",policy:"balanced"})});renderProfileList(data.profiles)}
     function renderProfileList(profiles){$("profiles").textContent=(profiles||[]).map(p=>p.id+" | "+p.name+" | "+p.provider+"/"+p.model+" | "+p.workspace).join("\\n")||"No profiles."}
     async function manageProfiles(){const data=await api("/api/profiles");renderProfileList(data.profiles);const action=prompt("Enter profile id to activate, or delete:<id>","");if(!action)return;if(action.startsWith("delete:")){const deleted=await api("/api/profiles?id="+encodeURIComponent(action.slice(7)),{method:"DELETE"});renderProfileList(deleted.profiles);return}const active=await api("/api/profiles/activate",{method:"POST",body:JSON.stringify({id:action})});$("endpoint").value=active.endpoint;$("provider").value=active.profile.provider;$("model").value=active.profile.model;$("status").textContent="Activated profile "+active.profile.name}
@@ -877,12 +1033,14 @@ function renderHtml(manifest) {
     async function serverStatus(){const data=await api("/api/server/status");addMessage("agent","Server status:\\n"+JSON.stringify(data,null,2))}
     async function supportBundle(){const data=await api("/api/support-bundle",{method:"POST",body:"{}"});addMessage("agent","Support bundle written:\\n"+data.path)}
     async function runUpdate(){if(prompt('Type "update" to run guarded repository update','')!=="update")return;const data=await api("/api/update",{method:"POST",body:JSON.stringify({confirm:"update"})});addMessage("agent","Update "+(data.ok?"completed":"failed")+":\\n"+data.stdout+"\\n"+data.stderr)}
+    async function license(){const status=await api("/api/license");if(status.allowed&&status.mode==="experimental"){addMessage("agent","License: Preview mode. Commercial key is not required yet.");return}const token=prompt(status.reason+"\nPaste the admin-provided signed license token, or Cancel:","");if(!token)return;const activated=await api("/api/license/activate",{method:"POST",body:JSON.stringify({token})});addMessage("agent","License activated: "+activated.edition)}
     $("connect").onclick=()=>connect().catch(err=>$("status").textContent=err.message);$("refresh").onclick=()=>refreshTools().catch(err=>$("status").textContent=err.message);$("send").onclick=send;$("prompt").addEventListener("keydown",(event)=>{if(event.ctrlKey&&event.key==="Enter")send()});
     if($("saveProfile"))$("saveProfile").onclick=saveProfile;if($("loadProfiles"))$("loadProfiles").onclick=manageProfiles;if($("exportProfiles"))$("exportProfiles").onclick=exportProfiles;
     if($("skills"))$("skills").onclick=listSkills;if($("readSkill"))$("readSkill").onclick=readSkill;if($("validateSkills"))$("validateSkills").onclick=validateSkills;
     if($("metrics"))$("metrics").onclick=showMetrics;if($("approvals"))$("approvals").onclick=manageApprovals;if($("readFile"))$("readFile").onclick=readWorkspaceFile;if($("diff"))$("diff").onclick=showDiff;
     if($("startServer"))$("startServer").onclick=startServer;if($("stopServer"))$("stopServer").onclick=stopServer;if($("serverStatus"))$("serverStatus").onclick=serverStatus;
-    if($("support"))$("support").onclick=supportBundle;if($("update"))$("update").onclick=runUpdate;health();
+    if($("support"))$("support").onclick=supportBundle;if($("update"))$("update").onclick=runUpdate;
+    $("newThread").onclick=newThread;$("loadThreads").onclick=loadThreads;$("license").onclick=license;health();
   </script>
 </body>
 </html>`;

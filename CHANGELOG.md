@@ -21,6 +21,10 @@ follows [Semantic Versioning](https://semver.org/).
   start/stop, support bundles, and guarded customer updates.
 - A self-contained .NET Windows launcher and `build-all.ps1` produce a separate
   `dist/LocalAgentStudio.exe` for every standalone version folder.
+- Studio v5 now has a loopback capability-token boundary, Origin/Host/JSON
+  enforcement, CSP headers, SQLite thread/turn persistence, recursive support
+  redaction, signed-license verification, signed release-integrity support,
+  anti-backdoor auditing, and cross-platform regression tests.
 
 ## [4.4.0-pro] - 2026-07-01
 

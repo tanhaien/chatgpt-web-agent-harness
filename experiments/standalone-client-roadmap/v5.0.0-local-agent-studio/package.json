@@ -3,10 +3,16 @@
   "version": "5.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "description": "Productized standalone Local Agent Studio prototype.",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check standalone-app.mjs"
+    "check": "node --check server.mjs && node --check standalone-app.mjs && node --check core/security.mjs && node --check core/redaction.mjs && node --check core/thread-store.mjs && node --check core/license-service.mjs && node --check core/integrity-service.mjs",
+    "test": "node --test test/*.test.mjs",
+    "security:audit": "node scripts/security-audit.mjs",
+    "integrity:generate": "node scripts/generate-integrity-manifest.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0"
