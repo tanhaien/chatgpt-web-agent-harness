@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.9.0] — 2026-07-02
+
+### 🚀 New in this fork (tanhaien/chatgpt-web-agent-harness)
+
+- **sandbox_exec** — Docker-isolated code execution (tests/lint/build)
+- **web_search** — DuckDuckGo search (no API key needed)
+- **web_fetch** — URL content → clean markdown
+- **verify_done** — Evidence-gated completion check (x-harness light)
+- **AGENTS.md** — Full operating playbook for ChatGPT Web Codex agent
+- **README** — Rewritten with architecture diagram + tunnel setup flow
+
 All notable changes to Local Coding Agent are documented here. The project
 follows [Semantic Versioning](https://semver.org/).
 
