@@ -11,6 +11,7 @@ import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { IntegrityService, loadReleasePublicKey } from "./core/integrity-service.mjs";
 import { LicenseService, loadLicensePublicKey } from "./core/license-service.mjs";
+import { PermissionBroker, PermissionDeniedError } from "./core/permission-broker.mjs";
 import { redactForSupport } from "./core/redaction.mjs";
 import { createStudioSecurity } from "./core/security.mjs";
 import { SecretStore, assertProvider } from "./core/secret-store.mjs";
@@ -31,6 +32,7 @@ export function startStudio(manifest) {
   const security = createStudioSecurity({ host, port });
   const threadStore = new ThreadStore(join(storageDir, "studio.db"));
   const secretStore = new SecretStore(storageDir);
+  const permissionBroker = new PermissionBroker({ strict: process.env.LCA_PERMISSION_BROKER !== "off" });
   const licenseService = new LicenseService({
     storageDir,
     manifest,
@@ -56,6 +58,7 @@ export function startStudio(manifest) {
     security,
     threadStore,
     secretStore,
+    permissionBroker,
     licenseService,
     integrityService
   };
@@ -107,6 +110,12 @@ async function handleApi(req, res, url, state) {
     if (url.pathname === "/api/model-presets") {
       return sendJson(res, 200, { presets: modelPresets(state.manifest) });
     }
+    if (url.pathname === "/api/permissions") {
+      return sendJson(res, 200, {
+        summary: state.permissionBroker.summary(),
+        audit: state.permissionBroker.publicAudit(url.searchParams.get("limit") || 100)
+      });
+    }
     if (url.pathname === "/api/secrets") {
       return sendJson(res, 200, {
         providers: {
@@ -122,9 +131,14 @@ async function handleApi(req, res, url, state) {
       if (req.method === "GET") return sendJson(res, 200, await state.secretStore.providerStatus(provider));
       if (req.method === "POST") {
         const body = await readJson(req);
+        state.permissionBroker.require("provider-key:set", body, { route: url.pathname, method: req.method, target: provider });
         return sendJson(res, 200, await state.secretStore.set(provider, body.value, { label: body.label }));
       }
-      if (req.method === "DELETE") return sendJson(res, 200, await state.secretStore.delete(provider));
+      if (req.method === "DELETE") {
+        const body = await readJson(req);
+        state.permissionBroker.require("provider-key:delete", body, { route: url.pathname, method: req.method, target: provider });
+        return sendJson(res, 200, await state.secretStore.delete(provider));
+      }
     }
     if (url.pathname === "/api/license") {
       return sendJson(res, 200, state.licenseService.status());
@@ -174,6 +188,7 @@ async function handleApi(req, res, url, state) {
     if (url.pathname === "/api/call-tool" && req.method === "POST") {
       if (!state.client) await connectMcp(state, state.mcpEndpoint);
       const body = await readJson(req);
+      state.permissionBroker.require("tool:call", body, { route: url.pathname, method: req.method, target: body.name });
       const result = await callMcpTool(state, body.name, body.arguments || {});
       return sendJson(res, 200, result);
     }
@@ -254,10 +269,14 @@ async function handleApi(req, res, url, state) {
     }
     if (url.pathname === "/api/server/start" && req.method === "POST") {
       assertFeature(state.manifest, "serverSupervisor");
-      return sendJson(res, 200, await startManagedServer(state, await readJson(req)));
+      const body = await readJson(req);
+      state.permissionBroker.require("mcp-server:start", body, { route: url.pathname, method: req.method });
+      return sendJson(res, 200, await startManagedServer(state, body));
     }
     if (url.pathname === "/api/server/stop" && req.method === "POST") {
       assertFeature(state.manifest, "serverSupervisor");
+      const body = await readJson(req);
+      state.permissionBroker.require("mcp-server:stop", body, { route: url.pathname, method: req.method });
       return sendJson(res, 200, await stopManagedServer(state));
     }
     if (url.pathname === "/api/dashboard/metrics") {
@@ -282,19 +301,28 @@ async function handleApi(req, res, url, state) {
     }
     if (url.pathname.startsWith("/api/approvals/") && req.method === "POST") {
       assertFeature(state.manifest, "approvals");
+      const body = await readJson(req);
+      state.permissionBroker.require("approval:mutate", body, { route: url.pathname, method: req.method });
       const suffix = url.pathname.slice("/api".length);
       return sendJson(res, 200, await dashboardJson(state, `/api${suffix}`, { method: "POST" }));
     }
     if (url.pathname === "/api/update" && req.method === "POST") {
       assertFeature(state.manifest, "customerUpdateFlow");
-      return sendJson(res, 200, await runCustomerUpdate(state, await readJson(req)));
+      const body = await readJson(req);
+      state.permissionBroker.require("customer-update:run", body, { route: url.pathname, method: req.method });
+      return sendJson(res, 200, await runCustomerUpdate(state, body));
     }
     if (url.pathname === "/api/support-bundle" && req.method === "POST") {
       assertFeature(state.manifest, "supportBundle");
+      const body = await readJson(req);
+      state.permissionBroker.require("support-bundle:export", body, { route: url.pathname, method: req.method });
       return sendJson(res, 200, await writeSupportBundle(state));
     }
     return sendJson(res, 404, { error: "Not found" });
   } catch (error) {
+    if (error instanceof PermissionDeniedError) {
+      return sendJson(res, error.status, { error: error.message, action: error.action, risk: error.risk });
+    }
     return sendJson(res, 500, { error: error?.message || String(error) });
   }
 }
@@ -314,7 +342,7 @@ function healthPayload(state) {
     active_profile: state.activeProfile,
     repo_root: state.repoRoot,
     managed_server_pid: state.serverProcess?.pid || null,
-    security: { loopback_only: true, session_token_required: true, origin_guard: true },
+    security: { loopback_only: true, session_token_required: true, origin_guard: true, permission_broker: state.permissionBroker.summary() },
     license: publicLicenseStatus(state.licenseService.status()),
     integrity: state.integrityService.status(),
     openai_key_present: false,
@@ -748,6 +776,7 @@ async function writeSupportBundle(state) {
       isError: event.isError,
       ms: event.ms
     })),
+    permissions: state.permissionBroker.publicAudit(100),
     tools: publicTools(state.tools),
     redaction: "Sensitive keys, credentials, private keys, authorization values, and secret-like strings are recursively redacted."
   };
@@ -1087,10 +1116,11 @@ function renderHtml(manifest, security) {
   <script nonce="${security.nonce}">
     const STUDIO_TOKEN=${JSON.stringify(security.token)};
     const $=(id)=>document.getElementById(id); const state={tools:[],threadId:null};
+    const intent=(action)=>({action,confirm:action});
     async function api(path,options={}){const res=await fetch(path,{...options,headers:{"content-type":"application/json","x-lca-studio-token":STUDIO_TOKEN,...(options.headers||{})}});const data=await res.json();if(!res.ok)throw new Error(data.error||res.statusText);return data}
     function addMessage(kind,text){const div=document.createElement("div");div.className="msg "+kind;div.textContent=text;$("messages").appendChild(div);$("messages").scrollTop=$("messages").scrollHeight;return div}
     function escapeHtml(text){return String(text).replace(/[&<>"']/g,(ch)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}[ch]))}
-    function renderTools(){ $("tools").innerHTML=""; for(const tool of state.tools){const div=document.createElement("div");div.className="tool";div.innerHTML="<b>"+escapeHtml(tool.name)+"</b><span class='muted'>"+escapeHtml(tool.description||"")+"</span>";const btn=document.createElement("button");btn.className="secondary";btn.textContent="Call";btn.onclick=async()=>{const raw=prompt("JSON arguments for "+tool.name,"{}");if(raw===null)return;try{const args=JSON.parse(raw);const data=await api("/api/call-tool",{method:"POST",body:JSON.stringify({name:tool.name,arguments:args})});addTimeline(data.event||{tool:tool.name,args,isError:!data.ok,ms:data.ms,result:JSON.stringify(data.result,null,2)})}catch(err){addTimeline({tool:tool.name,args:{},isError:true,ms:0,result:err.message})}};div.appendChild(btn);$("tools").appendChild(div)}}
+    function renderTools(){ $("tools").innerHTML=""; for(const tool of state.tools){const div=document.createElement("div");div.className="tool";div.innerHTML="<b>"+escapeHtml(tool.name)+"</b><span class='muted'>"+escapeHtml(tool.description||"")+"</span>";const btn=document.createElement("button");btn.className="secondary";btn.textContent="Call";btn.onclick=async()=>{const raw=prompt("JSON arguments for "+tool.name,"{}");if(raw===null)return;try{const args=JSON.parse(raw);const data=await api("/api/call-tool",{method:"POST",body:JSON.stringify({name:tool.name,arguments:args,intent:intent("tool:call")})});addTimeline(data.event||{tool:tool.name,args,isError:!data.ok,ms:data.ms,result:JSON.stringify(data.result,null,2)})}catch(err){addTimeline({tool:tool.name,args:{},isError:true,ms:0,result:err.message})}};div.appendChild(btn);$("tools").appendChild(div)}}
     function addTimeline(event){const div=document.createElement("div");div.className="box";const status=event.isError?"<span class='bad'>error</span>":"<span class='ok'>ok</span>";div.innerHTML="<b>"+escapeHtml(event.tool)+"</b> "+status+" <span class='muted'>"+(event.ms||0)+"ms</span><pre>"+escapeHtml(JSON.stringify(event.args||{},null,2))+"</pre><pre>"+escapeHtml(String(event.result||"").slice(0,4000))+"</pre>";$("timeline").prepend(div)}
     async function health(){try{const data=await api("/api/health");$("health").innerHTML=data.license?.allowed?(data.openai_key_present||data.anthropic_key_present?"<span class='ok'>ready</span>":"<span class='bad'>model setup needed</span>"):"<span class='bad'>license required</span>";if($("preset")){const p=await api("/api/model-presets");for(const item of p.presets||[]){const opt=document.createElement("option");opt.value=item.id;opt.textContent=item.label+" - "+item.provider+"/"+item.model;opt.dataset.provider=item.provider;opt.dataset.model=item.model;$("preset").appendChild(opt)}$("preset").onchange=()=>{const opt=$("preset").selectedOptions[0];if(opt&&opt.dataset.provider){$("provider").value=opt.dataset.provider;$("model").value=opt.dataset.model}}}await loadThreads()}catch{$("health").innerHTML="<span class='bad'>offline</span>"}}
     async function connect(){ $("status").textContent="Connecting..."; const data=await api("/api/connect",{method:"POST",body:JSON.stringify({endpoint:$("endpoint").value.trim()})}); state.tools=data.tools||[]; $("status").textContent="Connected to "+data.endpoint+". "+state.tools.length+" tools."; renderTools()}
@@ -1107,15 +1137,15 @@ function renderHtml(manifest, security) {
     async function readSkill(){const name=prompt("Skill name","");if(!name)return;const data=await api("/api/skills?name="+encodeURIComponent(name));addTimeline({tool:"read_skill",args:{name},isError:!data.ok,ms:data.ms,result:JSON.stringify(data.result,null,2)})}
     async function validateSkills(){const data=await api("/api/skills/validate",{method:"POST",body:"{}"});addMessage("agent","Skill validation "+(data.ok?"passed":"failed")+":\\n"+data.stdout+"\\n"+data.stderr)}
     async function showMetrics(){const data=await api("/api/dashboard/metrics");addMessage("agent","Dashboard metrics:\\n"+JSON.stringify(data,null,2))}
-    async function manageApprovals(){const data=await api("/api/approvals");addMessage("agent","Pending approvals:\\n"+JSON.stringify(data.pending||[],null,2));const action=prompt("Optional action: approve:<id> or deny:<id>","");if(!action)return;const parts=action.split(":");if(parts.length===2)await api("/api/approvals/"+encodeURIComponent(parts[1])+"/"+encodeURIComponent(parts[0]),{method:"POST",body:"{}"})}
+    async function manageApprovals(){const data=await api("/api/approvals");addMessage("agent","Pending approvals:\\n"+JSON.stringify(data.pending||[],null,2));const action=prompt("Optional action: approve:<id> or deny:<id>","");if(!action)return;const parts=action.split(":");if(parts.length===2)await api("/api/approvals/"+encodeURIComponent(parts[1])+"/"+encodeURIComponent(parts[0]),{method:"POST",body:JSON.stringify({intent:intent("approval:mutate")})})}
     async function readWorkspaceFile(){const path=prompt("Workspace-relative file path","README.md");if(!path)return;const data=await api("/api/dashboard/file?path="+encodeURIComponent(path));addMessage("agent",data.path+"\\n\\n"+data.content)}
     async function showDiff(){const data=await api("/api/dashboard/diff");addMessage("agent","Git diff:\\n"+(data.diff||data.error||"(empty)"))}
-    async function startServer(){const workspace=prompt("Workspace path for MCP server","");const data=await api("/api/server/start",{method:"POST",body:JSON.stringify({workspace:workspace||undefined,mode:"safe",policy:"balanced"})});$("endpoint").value=data.endpoint;$("status").textContent="MCP server running at "+data.endpoint}
-    async function stopServer(){const data=await api("/api/server/stop",{method:"POST",body:"{}"});$("status").textContent=data.stopped?"Managed MCP server stopped.":data.reason}
+    async function startServer(){const workspace=prompt("Workspace path for MCP server","");const data=await api("/api/server/start",{method:"POST",body:JSON.stringify({workspace:workspace||undefined,mode:"safe",policy:"balanced",intent:intent("mcp-server:start")})});$("endpoint").value=data.endpoint;$("status").textContent="MCP server running at "+data.endpoint}
+    async function stopServer(){const data=await api("/api/server/stop",{method:"POST",body:JSON.stringify({intent:intent("mcp-server:stop")})});$("status").textContent=data.stopped?"Managed MCP server stopped.":data.reason}
     async function serverStatus(){const data=await api("/api/server/status");addMessage("agent","Server status:\\n"+JSON.stringify(data,null,2))}
-    async function supportBundle(){const data=await api("/api/support-bundle",{method:"POST",body:"{}"});addMessage("agent","Support bundle written:\\n"+data.path)}
-    async function runUpdate(){if(prompt('Type "update" to run guarded repository update','')!=="update")return;const data=await api("/api/update",{method:"POST",body:JSON.stringify({confirm:"update"})});addMessage("agent","Update "+(data.ok?"completed":"failed")+":\\n"+data.stdout+"\\n"+data.stderr)}
-    async function saveProviderKey(provider){const value=prompt(provider+" API key","");if(!value)return;const data=await api("/api/secrets/"+encodeURIComponent(provider),{method:"POST",body:JSON.stringify({value,label:provider+" key"})});addMessage("agent",provider+" key saved: "+JSON.stringify(data))}
+    async function supportBundle(){const data=await api("/api/support-bundle",{method:"POST",body:JSON.stringify({intent:intent("support-bundle:export")})});addMessage("agent","Support bundle written:\\n"+data.path)}
+    async function runUpdate(){if(prompt('Type "update" to run guarded repository update','')!=="update")return;const data=await api("/api/update",{method:"POST",body:JSON.stringify({confirm:"update",intent:intent("customer-update:run")})});addMessage("agent","Update "+(data.ok?"completed":"failed")+":\\n"+data.stdout+"\\n"+data.stderr)}
+    async function saveProviderKey(provider){const value=prompt(provider+" API key","");if(!value)return;const data=await api("/api/secrets/"+encodeURIComponent(provider),{method:"POST",body:JSON.stringify({value,label:provider+" key",intent:intent("provider-key:set")})});addMessage("agent",provider+" key saved: "+JSON.stringify(data))}
     async function providerKeyStatus(){const data=await api("/api/secrets");addMessage("agent","Provider keys:\\n"+JSON.stringify(data,null,2))}
     async function license(){const status=await api("/api/license");if(status.allowed&&status.mode==="experimental"){addMessage("agent","License: Preview mode. Commercial key is not required yet.");return}const token=prompt(status.reason+"\nPaste the admin-provided signed license token, or Cancel:","");if(!token)return;const activated=await api("/api/license/activate",{method:"POST",body:JSON.stringify({token})});addMessage("agent","License activated: "+activated.edition)}
     $("connect").onclick=()=>connect().catch(err=>$("status").textContent=err.message);$("refresh").onclick=()=>refreshTools().catch(err=>$("status").textContent=err.message);$("send").onclick=send;$("prompt").addEventListener("keydown",(event)=>{if(event.ctrlKey&&event.key==="Enter")send()});

@@ -19,6 +19,10 @@ workspace controls, diagnostics, and commercial-release guardrails.
 - Loopback-only API boundary with Host/Origin validation, random per-process
   capability token, JSON-only mutation requests, CSP, no-sniff, anti-framing,
   restrictive permissions policy, and remote-MCP opt-in.
+- Server-side permission broker for privileged routes. Manual tool calls,
+  provider-key changes, managed server start/stop, customer updates, approval
+  mutations, and support-bundle exports require structured intent confirmation
+  and produce redacted audit metadata.
 - Durable SQLite threads, turns, messages, and tool events.
 - Recursive redaction for support bundles. Raw tool arguments/results are not
   exported in the event list.
@@ -69,6 +73,24 @@ encrypted vault:
 
 Stable should move this vault to the operating-system keychain or a platform
 credential manager before customer release.
+
+## Permission Broker
+
+Privileged API routes require a structured intent:
+
+```json
+{
+  "intent": {
+    "action": "provider-key:set",
+    "confirm": "provider-key:set"
+  }
+}
+```
+
+This is not a full OS sandbox. It is a server-side guardrail so renderer bugs,
+browser-origin mistakes, and accidental direct API calls cannot silently perform
+high-risk actions. Permission audit entries record action, risk, route, target,
+and allow/deny status, but not raw request payloads or secrets.
 
 ## Build Desktop Package
 
@@ -130,6 +152,10 @@ workspace controls, diagnostics và các lớp kiểm soát để phát hành th
 - API chỉ nghe loopback, kiểm tra Host/Origin, token ngẫu nhiên theo từng tiến
   trình, thao tác thay đổi chỉ nhận JSON, CSP, no-sniff, anti-framing,
   permissions policy chặt và remote MCP phải bật thủ công.
+- Permission broker chạy ở server cho các route có quyền cao. Manual tool call,
+  thay đổi provider key, start/stop managed server, customer update, approval
+  mutation và support-bundle export đều cần structured intent confirmation và
+  tạo audit metadata đã rút gọn.
 - SQLite lưu bền thread, turn, message và tool event.
 - Support bundle có redaction đệ quy. Event list không xuất raw tool args/results.
 - Xác minh license thương mại bằng Ed25519. Bản Preview chạy không cần key; bản
@@ -176,6 +202,24 @@ Preview có thể dùng provider key từ biến môi trường hoặc local enc
 
 Bản Stable nên chuyển vault này sang OS keychain hoặc credential manager của
 từng nền tảng trước khi phát hành cho khách hàng.
+
+## Permission Broker
+
+Các API có quyền cao cần intent có cấu trúc:
+
+```json
+{
+  "intent": {
+    "action": "provider-key:set",
+    "confirm": "provider-key:set"
+  }
+}
+```
+
+Đây chưa phải OS sandbox đầy đủ. Nó là guardrail ở server để lỗi renderer, lỗi
+browser origin hoặc việc gọi API trực tiếp không thể âm thầm chạy hành động rủi
+ro cao. Permission audit chỉ ghi action, risk, route, target và trạng thái
+allow/deny; không ghi raw payload hoặc secret.
 
 ## Build Desktop Package
 

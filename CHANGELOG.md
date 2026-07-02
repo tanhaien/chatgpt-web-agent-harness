@@ -31,6 +31,10 @@ follows [Semantic Versioning](https://semver.org/).
 - Studio v5 can store OpenAI and Anthropic provider keys in a local encrypted
   vault, reports only provider-key metadata through the API, and keeps env-based
   keys as readonly overrides for operators who prefer external secret handling.
+- Studio v5 adds a server-side permission broker for privileged routes such as
+  manual tool calls, provider-key changes, managed server control, customer
+  updates, approval mutations, and support-bundle exports. These routes now
+  require structured intent confirmation and write redacted audit metadata.
 
 ## [4.4.0-pro] - 2026-07-01
 

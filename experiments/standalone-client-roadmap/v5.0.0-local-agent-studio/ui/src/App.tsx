@@ -82,6 +82,7 @@ type ModelPreset = {
 };
 
 const token = document.querySelector<HTMLMetaElement>('meta[name="lca-studio-token"]')?.content || "";
+const intent = (action: string) => ({ action, confirm: action });
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
@@ -240,19 +241,19 @@ export function App() {
     const workspace = window.prompt("Workspace path for MCP server", "");
     const data = await api<{ endpoint: string }>("/api/server/start", {
       method: "POST",
-      body: JSON.stringify({ workspace: workspace || undefined, mode: "safe", policy: "balanced" })
+      body: JSON.stringify({ workspace: workspace || undefined, mode: "safe", policy: "balanced", intent: intent("mcp-server:start") })
     });
     setEndpoint(data.endpoint);
     setNotice(`MCP server running at ${data.endpoint}`);
   }
 
   async function stopServer() {
-    const data = await api<{ stopped?: boolean; reason?: string }>("/api/server/stop", { method: "POST", body: "{}" });
+    const data = await api<{ stopped?: boolean; reason?: string }>("/api/server/stop", { method: "POST", body: JSON.stringify({ intent: intent("mcp-server:stop") }) });
     setNotice(data.stopped ? "MCP server stopped" : data.reason || "No managed server");
   }
 
   async function supportBundle() {
-    const data = await api<{ path: string }>("/api/support-bundle", { method: "POST", body: "{}" });
+    const data = await api<{ path: string }>("/api/support-bundle", { method: "POST", body: JSON.stringify({ intent: intent("support-bundle:export") }) });
     setNotice(`Support bundle: ${data.path}`);
   }
 
@@ -277,7 +278,7 @@ export function App() {
     if (!value) return;
     const status = await api<ProviderStatus>(`/api/secrets/${providerId}`, {
       method: "POST",
-      body: JSON.stringify({ value, label: `${providerId} key` })
+      body: JSON.stringify({ value, label: `${providerId} key`, intent: intent("provider-key:set") })
     });
     setProviderKeys((current) => ({ ...current, [providerId]: status }));
     await boot();
@@ -286,7 +287,7 @@ export function App() {
 
   async function deleteProviderKey(providerId: "openai" | "anthropic") {
     if (!window.confirm(`Delete saved ${providerId} key from this device?`)) return;
-    await api<{ ok: boolean }>(`/api/secrets/${providerId}`, { method: "DELETE", body: "{}" });
+    await api<{ ok: boolean }>(`/api/secrets/${providerId}`, { method: "DELETE", body: JSON.stringify({ intent: intent("provider-key:delete") }) });
     const status = await api<ProviderStatus>(`/api/secrets/${providerId}`);
     setProviderKeys((current) => ({ ...current, [providerId]: status }));
     await boot();

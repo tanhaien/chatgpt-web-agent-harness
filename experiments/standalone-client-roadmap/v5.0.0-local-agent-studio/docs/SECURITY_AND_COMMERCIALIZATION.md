@@ -18,15 +18,18 @@ The Preview implements these baseline controls:
 5. CSP, anti-framing, no-sniff, no-referrer, and restrictive permissions
    headers are applied.
 6. Remote MCP endpoints are disabled unless the operator explicitly opts in.
-7. The Electron renderer runs with `nodeIntegration=false`,
+7. Privileged API routes require structured intent confirmation through the
+   server-side permission broker. Audit entries record metadata only, not raw
+   request payloads.
+8. The Electron renderer runs with `nodeIntegration=false`,
    `contextIsolation=true`, sandboxing enabled, denied permission prompts, and
    local-only navigation.
-8. Provider keys can be stored in a local AES-256-GCM encrypted vault; APIs
+9. Provider keys can be stored in a local AES-256-GCM encrypted vault; APIs
    return only metadata, and environment keys remain readonly operator-managed
    overrides.
-9. Support bundles recursively redact credentials and omit raw tool arguments
+10. Support bundles recursively redact credentials and omit raw tool arguments
    and results from the event list.
-10. SQLite persists threads without putting API credentials in the database.
+11. SQLite persists threads without putting API credentials in the database.
 
 This is defense in depth, not an operating-system sandbox. The Stable desktop
 app still needs typed IPC, OS-enforced workspace boundaries, network allowlists,
@@ -83,11 +86,12 @@ runtime isolation, and transparent release evidence are all required.
 ### Planned Stable Controls
 
 - Typed, allowlisted IPC instead of privileged localhost APIs.
+- One-time approvals backed by the permission broker for all destructive,
+  network, install, and out-of-root actions.
 - OS keychain storage for provider credentials and license tokens, replacing
   the Preview local encrypted vault.
 - OS-enforced workspace write boundaries.
 - Network disabled by default for model-generated commands.
-- One-time approvals for destructive, network, install, and out-of-root actions.
 - Device activation, revocation, offline grace periods, and privacy-preserving
   license refresh.
 - Signed auto-update with staged rollout and automatic rollback.
@@ -112,12 +116,14 @@ Preview hiện có các lớp bảo vệ cơ bản:
    `text/plain` cross-origin đơn giản.
 5. App gửi CSP, anti-framing, no-sniff, no-referrer và permissions policy chặt.
 6. Remote MCP bị tắt trừ khi operator chủ động bật.
-7. Electron renderer chạy với `nodeIntegration=false`, `contextIsolation=true`,
+7. API route có quyền cao phải có structured intent confirmation qua permission
+   broker ở server. Audit chỉ ghi metadata, không ghi raw request payload.
+8. Electron renderer chạy với `nodeIntegration=false`, `contextIsolation=true`,
    sandbox bật, permission prompt bị từ chối và chỉ cho điều hướng local.
-8. Provider key có thể lưu trong local vault mã hóa AES-256-GCM; API chỉ trả
+9. Provider key có thể lưu trong local vault mã hóa AES-256-GCM; API chỉ trả
    metadata, còn key từ env vẫn là readonly override do operator quản lý.
-9. Support Bundle redaction đệ quy và bỏ raw tool args/results khỏi event list.
-10. SQLite lưu thread nhưng không lưu API credential.
+10. Support Bundle redaction đệ quy và bỏ raw tool args/results khỏi event list.
+11. SQLite lưu thread nhưng không lưu API credential.
 
 Đây là defense in depth, chưa phải sandbox cấp hệ điều hành. Trước khi phát hành
 Stable cho khách, desktop app vẫn cần typed IPC, workspace boundary do hệ điều
@@ -172,11 +178,12 @@ code signing, runtime isolation và bằng chứng release minh bạch.
 ### Stable Còn Cần Gì
 
 - Typed IPC có allowlist thay cho privileged localhost APIs.
+- One-time approval dựa trên permission broker cho destructive, network,
+  install và out-of-root actions.
 - OS keychain để lưu provider credential và license token, thay cho local
   encrypted vault của Preview.
 - Workspace write boundary do hệ điều hành cưỡng chế.
 - Tắt network mặc định cho command do model sinh ra.
-- Approval một lần cho hành động destructive, network, install và out-of-root.
 - Device activation, revocation, offline grace period và license refresh bảo vệ quyền riêng tư.
 - Signed auto-update có staged rollout và automatic rollback.
 - Security review bên ngoài và penetration test trước release.
