@@ -64,6 +64,35 @@ SQLite module.
 Production packaging should bundle or verify the runtime so customers do not
 need to install Node.js manually.
 
+## Runtime Packaging
+
+The desktop launcher resolves Node.js in this order:
+
+1. `LCA_NODE_PATH`
+2. packaged runtime under Electron resources
+3. source-tree runtime under `runtimes/node/<platform>-<arch>/`
+4. system `node`
+
+Expected bundled layout:
+
+```text
+runtimes/node/win32-x64/node.exe
+runtimes/node/darwin-arm64/node
+runtimes/node/linux-x64/node
+```
+
+Check the selected runtime:
+
+```powershell
+npm run runtime:verify
+```
+
+Release CI should place the runtime files and run:
+
+```powershell
+npm run runtime:verify -- --require-bundled
+```
+
 ## Provider Keys
 
 Preview can use provider keys from either environment variables or the local
@@ -200,6 +229,35 @@ Electron. Launcher Preview hiện dùng binary `node` của máy, nên cần Nod
 
 Bản production nên bundle hoặc kiểm tra runtime để khách hàng không phải tự cài
 Node.js.
+
+## Runtime Packaging
+
+Desktop launcher resolve Node.js theo thứ tự:
+
+1. `LCA_NODE_PATH`
+2. packaged runtime trong Electron resources
+3. source-tree runtime ở `runtimes/node/<platform>-<arch>/`
+4. system `node`
+
+Layout runtime đi kèm:
+
+```text
+runtimes/node/win32-x64/node.exe
+runtimes/node/darwin-arm64/node
+runtimes/node/linux-x64/node
+```
+
+Kiểm tra runtime đang được chọn:
+
+```powershell
+npm run runtime:verify
+```
+
+Release CI nên đặt runtime file vào đúng layout rồi chạy:
+
+```powershell
+npm run runtime:verify -- --require-bundled
+```
 
 ## Provider Keys
 

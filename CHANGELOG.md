@@ -39,6 +39,10 @@ follows [Semantic Versioning](https://semver.org/).
   Electron main process maps renderer requests through a small allowlist,
   injects the local session token and structured intent, and rejects untrusted
   renderer origins.
+- Studio v5 desktop now has a Node runtime resolver for release packaging. It
+  supports `LCA_NODE_PATH`, packaged runtimes under `runtimes/node/<platform>`,
+  source-tree runtimes for preview testing, and system Node fallback, with
+  `runtime:verify` checks for release CI.
 
 ## [4.4.0-pro] - 2026-07-01
 

@@ -11,12 +11,13 @@
   "main": "desktop/main.mjs",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check standalone-app.mjs && node --check desktop/main.mjs && node --check desktop/preload.mjs && node --check desktop/privileged-actions.mjs && node --check core/security.mjs && node --check core/permission-broker.mjs && node --check core/redaction.mjs && node --check core/thread-store.mjs && node --check core/secret-store.mjs && node --check core/license-service.mjs && node --check core/integrity-service.mjs && tsc --noEmit",
+    "check": "node --check server.mjs && node --check standalone-app.mjs && node --check desktop/main.mjs && node --check desktop/preload.mjs && node --check desktop/privileged-actions.mjs && node --check desktop/runtime-resolver.mjs && node --check scripts/verify-runtime-bundle.mjs && node --check core/security.mjs && node --check core/permission-broker.mjs && node --check core/redaction.mjs && node --check core/thread-store.mjs && node --check core/secret-store.mjs && node --check core/license-service.mjs && node --check core/integrity-service.mjs && tsc --noEmit",
     "ui:build": "vite build",
     "desktop:dev": "electron .",
     "desktop:pack": "npm run ui:build && electron-builder --dir",
     "desktop:dist": "npm run ui:build && electron-builder",
     "test": "node --test test/*.test.mjs",
+    "runtime:verify": "node scripts/verify-runtime-bundle.mjs",
     "security:audit": "node scripts/security-audit.mjs",
     "integrity:generate": "node scripts/generate-integrity-manifest.mjs"
   },
@@ -28,6 +29,7 @@
       "core/**/*",
       "desktop/**/*",
       "dist/ui/**/*",
+      "runtimes/**/*",
       "scripts/**/*",
       "standalone-app.mjs",
       "server.mjs",

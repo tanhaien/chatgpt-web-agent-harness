@@ -342,6 +342,11 @@ function healthPayload(state) {
     active_profile: state.activeProfile,
     repo_root: state.repoRoot,
     managed_server_pid: state.serverProcess?.pid || null,
+    node_runtime: {
+      executable: process.execPath,
+      source: process.env.LCA_NODE_RUNTIME_SOURCE || "direct",
+      version: process.env.LCA_NODE_RUNTIME_VERSION || process.versions.node
+    },
     security: { loopback_only: true, session_token_required: true, origin_guard: true, permission_broker: state.permissionBroker.summary() },
     license: publicLicenseStatus(state.licenseService.status()),
     integrity: state.integrityService.status(),

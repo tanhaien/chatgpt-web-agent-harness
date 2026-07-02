@@ -5,8 +5,8 @@
 ### Security Boundaries
 
 Local Agent Studio is a privileged coding agent. Treat model output, workspace
-content, MCP tool descriptions, downloaded dependencies, and remote endpoints
-as untrusted input.
+content, MCP tool descriptions, downloaded dependencies, remote endpoints, and
+runtime files as untrusted input until verified.
 
 The Preview implements these baseline controls:
 
@@ -28,16 +28,20 @@ The Preview implements these baseline controls:
    process owns the Studio token, maps actions through an allowlist, injects
    structured intent, and validates the renderer origin before proxying.
 10. Provider keys can be stored in a local AES-256-GCM encrypted vault; APIs
-   return only metadata, and environment keys remain readonly operator-managed
-   overrides.
+    return only metadata, and environment keys remain readonly operator-managed
+    overrides.
 11. Support bundles recursively redact credentials and omit raw tool arguments
-   and results from the event list.
+    and results from the event list.
 12. SQLite persists threads without putting API credentials in the database.
+13. The desktop launcher resolves Node.js from `LCA_NODE_PATH`, packaged
+    runtimes, source-tree runtimes, then system Node. Release CI can require a
+    bundled runtime with `npm run runtime:verify -- --require-bundled`.
 
-This is defense in depth, not an operating-system sandbox. The Stable desktop
-app still needs typed IPC coverage for every privileged workflow, OS-enforced
-workspace boundaries, network allowlists, signed installers, signed update
-manifests, and platform code signing before customer release.
+This is defense in depth, not an operating-system sandbox. Before customer
+release, the Stable desktop app still needs typed IPC coverage for every
+privileged workflow, OS-enforced workspace boundaries, network allowlists,
+signed installers, signed update manifests, bundled runtime artifacts for every
+supported OS/arch, and platform code signing.
 
 ### Commercial License Design
 
@@ -71,16 +75,18 @@ The release pipeline must:
 
 1. Install dependencies from the lockfile with `npm ci`.
 2. Reject install/prepare lifecycle scripts unless explicitly reviewed.
-3. Run syntax checks, unit tests, HTTP security tests, dependency audit, and
+3. Place verified Node runtime artifacts in `runtimes/node/<platform>-<arch>/`.
+4. Run `npm run runtime:verify -- --require-bundled` for each release target.
+5. Run syntax checks, unit tests, HTTP security tests, dependency audit, and
    `security:audit` on Windows, macOS, and Linux.
-4. Generate a SHA-256 integrity manifest for production runtime files.
-5. Sign the integrity manifest outside the repository.
-6. Build in an isolated CI runner from a reviewed commit.
-7. Generate an SBOM and provenance attestation.
-8. Sign Windows, macOS, and Linux release artifacts with platform-appropriate
-   signing identities.
-9. Publish checksums and verify them before installation/update.
-10. Require a separately signed update manifest and support rollback.
+6. Generate a SHA-256 integrity manifest for production runtime files.
+7. Sign the integrity manifest outside the repository.
+8. Build in an isolated CI runner from a reviewed commit.
+9. Generate an SBOM and provenance attestation.
+10. Sign Windows, macOS, and Linux release artifacts with platform-appropriate
+    signing identities.
+11. Publish checksums and verify them before installation/update.
+12. Require a separately signed update manifest and support rollback.
 
 Pattern scanning cannot prove that software has no backdoor. Review, least
 privilege, reproducible inputs, signed provenance, platform code signing,
@@ -108,8 +114,8 @@ runtime isolation, and transparent release evidence are all required.
 ### Ranh Giới Bảo Mật
 
 Local Agent Studio là coding agent có quyền cao. Phải xem model output, nội dung
-workspace, mô tả MCP tool, dependency tải về và remote endpoint là dữ liệu không
-đáng tin cậy.
+workspace, mô tả MCP tool, dependency tải về, remote endpoint và runtime file là
+dữ liệu chưa đáng tin cho tới khi được kiểm tra.
 
 Preview hiện có các lớp bảo vệ cơ bản:
 
@@ -128,13 +134,17 @@ Preview hiện có các lớp bảo vệ cơ bản:
    Studio token, map action qua allowlist, tự gắn structured intent và kiểm tra
    renderer origin trước khi proxy.
 10. Provider key có thể lưu trong local vault mã hóa AES-256-GCM; API chỉ trả
-   metadata, còn key từ env vẫn là readonly override do operator quản lý.
+    metadata, còn key từ env vẫn là readonly override do operator quản lý.
 11. Support Bundle redaction đệ quy và bỏ raw tool args/results khỏi event list.
 12. SQLite lưu thread nhưng không lưu API credential.
+13. Desktop launcher resolve Node.js từ `LCA_NODE_PATH`, packaged runtime,
+    source-tree runtime rồi mới tới system Node. Release CI có thể bắt buộc
+    bundled runtime bằng `npm run runtime:verify -- --require-bundled`.
 
 Đây là defense in depth, chưa phải sandbox cấp hệ điều hành. Trước khi phát hành
-Stable cho khách, desktop app vẫn cần typed IPC, workspace boundary do hệ điều
-hành cưỡng chế, network allowlist, signed installer, signed update manifest và
+Stable cho khách, desktop app vẫn cần typed IPC cho toàn bộ workflow có quyền
+cao, workspace boundary do hệ điều hành cưỡng chế, network allowlist, signed
+installer, signed update manifest, runtime bundle cho mọi OS/arch được hỗ trợ và
 platform code signing.
 
 ### Thiết Kế License Thương Mại
@@ -168,19 +178,21 @@ Release pipeline phải:
 
 1. Cài dependency từ lockfile bằng `npm ci`.
 2. Từ chối install/prepare lifecycle script nếu chưa review rõ ràng.
-3. Chạy syntax check, unit test, HTTP security test, dependency audit và
+3. Đặt Node runtime đã verify vào `runtimes/node/<platform>-<arch>/`.
+4. Chạy `npm run runtime:verify -- --require-bundled` cho từng release target.
+5. Chạy syntax check, unit test, HTTP security test, dependency audit và
    `security:audit` trên Windows, macOS và Linux.
-4. Tạo SHA-256 integrity manifest cho các file runtime production.
-5. Ký integrity manifest ở bên ngoài repository.
-6. Build trong CI runner cô lập từ commit đã review.
-7. Tạo SBOM và provenance attestation.
-8. Ký artifact Windows, macOS và Linux bằng signing identity phù hợp từng nền tảng.
-9. Công bố checksum và verify trước khi install/update.
-10. Yêu cầu update manifest được ký riêng và hỗ trợ rollback.
+6. Tạo SHA-256 integrity manifest cho các file runtime production.
+7. Ký integrity manifest ở bên ngoài repository.
+8. Build trong CI runner cô lập từ commit đã review.
+9. Tạo SBOM và provenance attestation.
+10. Ký artifact Windows, macOS và Linux bằng signing identity phù hợp từng nền tảng.
+11. Công bố checksum và verify trước khi install/update.
+12. Yêu cầu update manifest được ký riêng và hỗ trợ rollback.
 
 Pattern scanner không thể tự chứng minh app không có backdoor. Cần kết hợp code
-review, least privilege, input build có thể truy vết, signed provenance, platform
-code signing, runtime isolation và bằng chứng release minh bạch.
+review, least privilege, input build có thể truy vết, signed provenance,
+platform code signing, runtime isolation và bằng chứng release minh bạch.
 
 ### Stable Còn Cần Gì
 
@@ -192,6 +204,7 @@ code signing, runtime isolation và bằng chứng release minh bạch.
   encrypted vault của Preview.
 - Workspace write boundary do hệ điều hành cưỡng chế.
 - Tắt network mặc định cho command do model sinh ra.
-- Device activation, revocation, offline grace period và license refresh bảo vệ quyền riêng tư.
+- Device activation, revocation, offline grace period và license refresh bảo vệ
+  quyền riêng tư.
 - Signed auto-update có staged rollout và automatic rollback.
 - Security review bên ngoài và penetration test trước release.

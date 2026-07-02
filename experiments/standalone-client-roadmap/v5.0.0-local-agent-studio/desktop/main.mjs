@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildPrivilegedRequest } from "./privileged-actions.mjs";
+import { resolveNodeRuntime } from "./runtime-resolver.mjs";
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = dirname(APP_DIR);
@@ -14,6 +15,7 @@ const baseUrl = `http://${host}:${port}`;
 let serverProcess = null;
 let mainWindow = null;
 let studioToken = "";
+let nodeRuntimeInfo = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
@@ -28,8 +30,8 @@ app.whenReady().then(async () => {
   try {
     hardenSession();
     installIpcHandlers();
-    const nodeRuntime = await verifyNodeRuntime();
-    serverProcess = startServer(nodeRuntime);
+    nodeRuntimeInfo = await verifyNodeRuntime();
+    serverProcess = startServer(nodeRuntimeInfo.path);
     await waitForHealth();
     studioToken = await readStudioToken();
     mainWindow = createWindow();
@@ -128,7 +130,9 @@ function startServer(node) {
       ...process.env,
       LCA_STUDIO_HOST: host,
       LCA_STUDIO_PORT: String(port),
-      LCA_DESKTOP: "1"
+      LCA_DESKTOP: "1",
+      LCA_NODE_RUNTIME_SOURCE: nodeRuntimeInfo?.source || "unknown",
+      LCA_NODE_RUNTIME_VERSION: nodeRuntimeInfo?.version || ""
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true
@@ -144,13 +148,13 @@ function startServer(node) {
 }
 
 async function verifyNodeRuntime() {
-  const node = process.env.LCA_NODE_PATH || "node";
-  const version = await nodeVersion(node);
-  const minimum = manifest.minimumNodeVersion || "22.5.0";
-  if (!isAtLeastVersion(version, minimum)) {
-    throw new Error(`Node.js ${minimum}+ is required for this Preview. Found ${version || "unknown"}. Set LCA_NODE_PATH to a compatible node.exe or install Node.js ${minimum}+.`);
-  }
-  return node;
+  return resolveNodeRuntime({
+    env: process.env,
+    manifest,
+    rootDir: ROOT_DIR,
+    resourcesPath: process.resourcesPath,
+    nodeVersion
+  });
 }
 
 function nodeVersion(node) {
@@ -165,16 +169,6 @@ function nodeVersion(node) {
       else resolve(output.trim().replace(/^v/, ""));
     });
   });
-}
-
-function isAtLeastVersion(actual, minimum) {
-  const left = String(actual || "").split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const right = String(minimum || "").split(".").map((part) => Number.parseInt(part, 10) || 0);
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    if ((left[index] || 0) > (right[index] || 0)) return true;
-    if ((left[index] || 0) < (right[index] || 0)) return false;
-  }
-  return true;
 }
 
 async function waitForHealth() {
