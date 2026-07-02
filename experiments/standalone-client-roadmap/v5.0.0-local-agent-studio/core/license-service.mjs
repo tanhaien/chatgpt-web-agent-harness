@@ -1,5 +1,5 @@
 import { verify } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export class LicenseService {
@@ -9,6 +9,7 @@ export class LicenseService {
     this.publicKeyPem = publicKeyPem;
     this.now = now;
     this.preview = manifest.releaseStage !== "stable";
+    this.runtimeToken = "";
   }
 
   status() {
@@ -23,25 +24,58 @@ export class LicenseService {
     if (!this.publicKeyPem) {
       return { allowed: false, mode: "enforced", edition: null, reason: "License verification key is not configured." };
     }
-    if (!existsSync(this.file)) {
+    if (!this.runtimeToken && !existsSync(this.file)) {
       return { allowed: false, mode: "enforced", edition: null, reason: "No license has been activated." };
     }
     try {
-      const saved = JSON.parse(readFileSync(this.file, "utf8"));
-      const claims = this.verifyToken(saved.token);
-      return { allowed: true, mode: "enforced", edition: claims.edition, claims: publicClaims(claims), reason: "License is valid." };
+      const token = this.runtimeToken || JSON.parse(readFileSync(this.file, "utf8")).token;
+      const claims = this.verifyToken(token);
+      return {
+        allowed: true,
+        mode: "enforced",
+        edition: claims.edition,
+        source: this.runtimeToken ? "os-safe-storage" : "legacy-file",
+        claims: publicClaims(claims),
+        reason: "License is valid."
+      };
     } catch (error) {
       return { allowed: false, mode: "enforced", edition: null, reason: error?.message || String(error) };
     }
   }
 
-  activate(token) {
+  activate(token, { persist = true } = {}) {
     if (!this.publicKeyPem) throw new Error("License verification key is not configured.");
     const claims = this.verifyToken(token);
-    mkdirSync(dirname(this.file), { recursive: true });
-    writeFileSync(this.file, JSON.stringify({ token, activatedAt: new Date(this.now()).toISOString() }, null, 2), { encoding: "utf8", mode: 0o600 });
-    try { chmodSync(this.file, 0o600); } catch {}
-    return { allowed: true, mode: this.preview ? "experimental" : "enforced", edition: claims.edition, claims: publicClaims(claims) };
+    if (persist) {
+      mkdirSync(dirname(this.file), { recursive: true });
+      writeFileSync(this.file, JSON.stringify({ token, activatedAt: new Date(this.now()).toISOString() }, null, 2), { encoding: "utf8", mode: 0o600 });
+      try { chmodSync(this.file, 0o600); } catch {}
+    } else {
+      this.runtimeToken = String(token);
+    }
+    return {
+      allowed: true,
+      mode: this.preview ? "experimental" : "enforced",
+      edition: claims.edition,
+      source: persist ? "legacy-file" : "os-safe-storage",
+      claims: publicClaims(claims)
+    };
+  }
+
+  activateRuntime(token, { removeLegacy = true } = {}) {
+    const result = this.activate(token, { persist: false });
+    if (removeLegacy && existsSync(this.file)) {
+      try { unlinkSync(this.file); } catch {}
+    }
+    return result;
+  }
+
+  clearRuntime({ removeLegacy = false } = {}) {
+    this.runtimeToken = "";
+    if (removeLegacy && existsSync(this.file)) {
+      try { unlinkSync(this.file); } catch {}
+    }
+    return { ok: true };
   }
 
   verifyToken(token) {

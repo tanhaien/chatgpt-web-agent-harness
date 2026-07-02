@@ -50,6 +50,9 @@ follows [Semantic Versioning](https://semver.org/).
   Electron `safeStorage`, syncs decrypted values to the server only in memory
   through a separate per-process bridge token, removes legacy vault copies, and
   rejects Linux `basic_text` fallback storage.
+- Studio v5 desktop now stores admin-issued commercial license tokens through
+  the same OS-backed secure store, verifies them in server memory, removes
+  legacy plaintext `license.json`, and reports only public license metadata.
 
 ## [4.4.0-pro] - 2026-07-01
 

@@ -33,10 +33,13 @@ The Preview implements these baseline controls:
     Browser Preview retains the AES-256-GCM vault; APIs return only metadata.
     `npm run credential:smoke` verifies the actual backend and encryption
     round-trip on the current machine.
-11. Support bundles recursively redact credentials and omit raw tool arguments
+11. Admin-issued Stable license tokens use the same OS-backed store. The server
+    verifies them in memory through the desktop-only bridge and removes legacy
+    plaintext `license.json` after secure activation.
+12. Support bundles recursively redact credentials and omit raw tool arguments
     and results from the event list.
-12. SQLite persists threads without putting API credentials in the database.
-13. The desktop launcher resolves Node.js from `LCA_NODE_PATH`, packaged
+13. SQLite persists threads without putting API credentials in the database.
+14. The desktop launcher resolves Node.js from `LCA_NODE_PATH`, packaged
     runtimes, source-tree runtimes, then system Node. Release CI can require a
     bundled runtime with `npm run runtime:verify -- --require-bundled`.
 
@@ -101,8 +104,8 @@ runtime isolation, and transparent release evidence are all required.
   direct renderer access to localhost APIs.
 - One-time approvals backed by the permission broker for all destructive,
   network, install, and out-of-root actions.
-- Extend OS-backed storage to license tokens and complete installation testing
-  for Windows DPAPI, macOS Keychain, and Linux secret-service backends.
+- Complete installation testing for OS-backed provider/license storage on
+  Windows DPAPI, macOS Keychain, and Linux secret-service backends.
 - OS-enforced workspace write boundaries.
 - Network disabled by default for model-generated commands.
 - Device activation, revocation, offline grace periods, and privacy-preserving
@@ -142,9 +145,12 @@ Preview hiện có các lớp bảo vệ cơ bản:
     API chỉ trả metadata.
     `npm run credential:smoke` kiểm tra backend thật và encrypt/decrypt round-trip
     trên máy hiện tại.
-11. Support Bundle redaction đệ quy và bỏ raw tool args/results khỏi event list.
-12. SQLite lưu thread nhưng không lưu API credential.
-13. Desktop launcher resolve Node.js từ `LCA_NODE_PATH`, packaged runtime,
+11. Stable license token do admin cấp dùng cùng OS-backed store. Server verify
+    token trong RAM qua desktop-only bridge và dọn plaintext `license.json` cũ
+    sau khi secure activation thành công.
+12. Support Bundle redaction đệ quy và bỏ raw tool args/results khỏi event list.
+13. SQLite lưu thread nhưng không lưu API credential.
+14. Desktop launcher resolve Node.js từ `LCA_NODE_PATH`, packaged runtime,
     source-tree runtime rồi mới tới system Node. Release CI có thể bắt buộc
     bundled runtime bằng `npm run runtime:verify -- --require-bundled`.
 
@@ -207,8 +213,8 @@ platform code signing, runtime isolation và bằng chứng release minh bạch.
   quyền renderer gọi trực tiếp localhost APIs.
 - One-time approval dựa trên permission broker cho destructive, network,
   install và out-of-root actions.
-- Mở rộng OS-backed storage cho license token và hoàn tất kiểm thử cài đặt với
-  Windows DPAPI, macOS Keychain và Linux secret-service.
+- Hoàn tất kiểm thử cài đặt OS-backed provider/license storage với Windows
+  DPAPI, macOS Keychain và Linux secret-service.
 - Workspace write boundary do hệ điều hành cưỡng chế.
 - Tắt network mặc định cho command do model sinh ra.
 - Device activation, revocation, offline grace period và license refresh bảo vệ

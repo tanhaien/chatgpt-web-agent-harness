@@ -16,8 +16,11 @@ test("desktop credential store persists only OS-encrypted ciphertext", async () 
     assert.equal(metadata.source, "os-safe-storage");
     assert.equal(await store.get("openai"), secret);
     assert.equal((await store.all()).openai, secret);
+    await store.set("license", "signed.license.token");
+    assert.equal((await store.all()).license, "signed.license.token");
     const raw = readFileSync(file, "utf8");
     assert.equal(raw.includes(secret), false);
+    assert.equal(raw.includes("signed.license.token"), false);
     assert.match(raw, /ciphertext/);
     const status = await store.status();
     assert.equal(status.available, true);

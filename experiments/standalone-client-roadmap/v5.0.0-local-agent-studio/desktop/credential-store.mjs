@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 
 const VERSION = 1;
-const PROVIDERS = new Set(["openai", "anthropic"]);
+const PROVIDERS = new Set(["openai", "anthropic", "license"]);
 
 export class DesktopCredentialStore {
   constructor({ file, safeStorage, now = () => Date.now() }) {

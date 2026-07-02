@@ -4,6 +4,8 @@ const ACTIONS = new Map([
   ["tool:call", { risk: "medium", confirmation: "tool:call" }],
   ["provider-key:set", { risk: "sensitive", confirmation: "provider-key:set" }],
   ["provider-key:delete", { risk: "sensitive", confirmation: "provider-key:delete" }],
+  ["license:activate", { risk: "sensitive", confirmation: "license:activate" }],
+  ["license:delete", { risk: "sensitive", confirmation: "license:delete" }],
   ["mcp-server:start", { risk: "high", confirmation: "mcp-server:start" }],
   ["mcp-server:stop", { risk: "high", confirmation: "mcp-server:stop" }],
   ["approval:mutate", { risk: "high", confirmation: "approval:mutate" }],

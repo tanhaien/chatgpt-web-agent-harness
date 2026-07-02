@@ -188,6 +188,12 @@ sent to customers.
 Release integrity uses a different signing key from customer licensing. See
 `docs/SECURITY_AND_COMMERCIALIZATION.md` for the threat model and release gates.
 
+In the desktop app, a Stable license token is stored through Electron
+`safeStorage`. Electron main decrypts it and sends it to the server only in
+memory through the desktop-only bridge. A successful secure activation removes
+the legacy plaintext `license.json` file. Browser Preview retains the legacy
+file flow for development compatibility.
+
 ## Production Exit Criteria
 
 - A non-expert customer can install the app, connect a model key, select a
@@ -385,6 +391,11 @@ truyền qua command line, đặt trong CI log hoặc gửi cho khách hàng.
 
 Release integrity dùng khóa ký riêng với customer licensing. Xem
 `docs/SECURITY_AND_COMMERCIALIZATION.md` để biết threat model và release gates.
+
+Trong desktop app, Stable license token được lưu qua Electron `safeStorage`.
+Electron main decrypt rồi chỉ gửi token vào RAM server qua desktop-only bridge.
+Khi secure activation thành công, app dọn file plaintext `license.json` cũ.
+Browser Preview vẫn giữ legacy file flow để tương thích phát triển.
 
 ## Tiêu Chí Lên Production
 

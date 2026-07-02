@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -76,6 +76,25 @@ test("invalid license dates are rejected instead of bypassing expiry checks", ()
       now: () => Date.parse("2026-06-01T00:00:00.000Z")
     });
     assert.throws(() => service.activate(token(claims({ expiresAt: "not-a-date" }))), /expiresAt is invalid/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("desktop runtime license is verified in memory and removes legacy plaintext storage", () => {
+  const dir = mkdtempSync(join(tmpdir(), "lca-studio-runtime-license-"));
+  const now = () => Date.parse("2026-06-01T00:00:00.000Z");
+  try {
+    const service = new LicenseService({ storageDir: dir, manifest: { releaseStage: "stable" }, publicKeyPem, now });
+    service.activate(token(claims()));
+    assert.equal(existsSync(join(dir, "license.json")), true);
+    const runtime = service.activateRuntime(token(claims({ licenseId: "lic_runtime" })));
+    assert.equal(runtime.source, "os-safe-storage");
+    assert.equal(existsSync(join(dir, "license.json")), false);
+    assert.equal(service.status().source, "os-safe-storage");
+    assert.equal(service.status().claims.licenseId, "lic_runtime");
+    service.clearRuntime({ removeLegacy: true });
+    assert.equal(service.status().allowed, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

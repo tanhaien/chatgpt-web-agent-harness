@@ -299,10 +299,10 @@ export function App() {
     }
     const licenseToken = window.prompt(`${status.reason || "License token required"}\nPaste admin-provided signed license token:`, "");
     if (!licenseToken) return;
-    const activated = await api<{ edition?: string }>("/api/license/activate", {
+    const activated = await privilegedApi<{ edition?: string }>("license:activate", { token: licenseToken }, () => api("/api/license/activate", {
       method: "POST",
-      body: JSON.stringify({ token: licenseToken })
-    });
+      body: JSON.stringify({ token: licenseToken, intent: intent("license:activate") })
+    }));
     setNotice(`License activated: ${activated.edition || "ok"}`);
     await boot();
   }

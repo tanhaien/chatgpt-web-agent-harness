@@ -21,6 +21,8 @@ test("desktop privileged action mapping is a small explicit allowlist", () => {
   assert.deepEqual(privilegedActionNames().sort(), [
     "approval:mutate",
     "customerUpdate:run",
+    "license:activate",
+    "license:delete",
     "mcpServer:start",
     "mcpServer:stop",
     "providerKey:delete",

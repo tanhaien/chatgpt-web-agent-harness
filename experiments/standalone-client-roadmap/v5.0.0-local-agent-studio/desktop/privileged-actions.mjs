@@ -19,6 +19,15 @@ export function buildPrivilegedRequest(request = {}) {
         intent: intent("provider-key:delete")
       });
     }
+    case "license:activate":
+      return jsonRequest("POST", "/api/license/activate", {
+        token: String(payload.token || ""),
+        intent: intent("license:activate")
+      });
+    case "license:delete":
+      return jsonRequest("DELETE", "/api/license", {
+        intent: intent("license:delete")
+      });
     case "mcpServer:start":
       return jsonRequest("POST", "/api/server/start", {
         workspace: optionalString(payload.workspace),
@@ -70,6 +79,8 @@ export function privilegedActionNames() {
   return [
     "providerKey:set",
     "providerKey:delete",
+    "license:activate",
+    "license:delete",
     "mcpServer:start",
     "mcpServer:stop",
     "supportBundle:export",

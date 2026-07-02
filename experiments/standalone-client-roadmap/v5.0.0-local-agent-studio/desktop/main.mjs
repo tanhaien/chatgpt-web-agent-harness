@@ -114,6 +114,9 @@ function installIpcHandlers() {
       if (request?.action === "providerKey:set" || request?.action === "providerKey:delete") {
         return await handleDesktopCredentialAction(request);
       }
+      if (request?.action === "license:activate" || request?.action === "license:delete") {
+        return await handleDesktopLicenseAction(request);
+      }
       const spec = buildPrivilegedRequest(request);
       const response = await fetch(`${baseUrl}${spec.path}`, {
         method: spec.method,
@@ -183,8 +186,29 @@ async function syncDesktopCredentials() {
   if (!credentialStore?.available()) return;
   const credentials = await credentialStore.all();
   for (const [provider, value] of Object.entries(credentials)) {
-    await syncDesktopSecret(provider, value, `${provider} OS credential`);
+    if (provider === "license") await syncDesktopLicense(value);
+    else await syncDesktopSecret(provider, value, `${provider} OS credential`);
   }
+}
+
+async function handleDesktopLicenseAction(request) {
+  if (!credentialStore?.available()) {
+    return { ok: false, status: 503, error: "Operating-system credential encryption is unavailable." };
+  }
+  if (request.action === "license:activate") {
+    const token = String(request.payload?.token || "");
+    const data = await syncDesktopLicense(token);
+    try {
+      await credentialStore.set("license", token);
+    } catch (error) {
+      await deleteDesktopLicense().catch(() => {});
+      throw error;
+    }
+    return { ok: true, status: 200, data };
+  }
+  await credentialStore.delete("license");
+  const data = await deleteDesktopLicense();
+  return { ok: true, status: 200, data };
 }
 
 async function syncDesktopSecret(provider, value, label = "") {
@@ -199,6 +223,34 @@ async function deleteDesktopSecret(provider) {
   return desktopSecretRequest(provider, "DELETE", {
     intent: { action: "provider-key:delete", confirm: "provider-key:delete" }
   });
+}
+
+async function syncDesktopLicense(token) {
+  return desktopLicenseRequest("POST", {
+    token,
+    intent: { action: "license:activate", confirm: "license:activate" }
+  });
+}
+
+async function deleteDesktopLicense() {
+  return desktopLicenseRequest("DELETE", {
+    intent: { action: "license:delete", confirm: "license:delete" }
+  });
+}
+
+async function desktopLicenseRequest(method, body) {
+  const response = await fetch(`${baseUrl}/api/desktop-license`, {
+    method,
+    headers: {
+      "content-type": "application/json",
+      "x-lca-studio-token": studioToken,
+      "x-lca-desktop-token": desktopBridgeToken
+    },
+    body: JSON.stringify(body)
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Desktop license sync failed (${response.status})`);
+  return data;
 }
 
 async function desktopSecretRequest(provider, method, body) {

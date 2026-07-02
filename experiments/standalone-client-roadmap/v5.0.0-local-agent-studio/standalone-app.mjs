@@ -148,6 +148,18 @@ async function handleApi(req, res, url, state) {
         return sendJson(res, 200, state.secretStore.deleteRuntime(provider));
       }
     }
+    if (url.pathname === "/api/desktop-license") {
+      if (!authorizeDesktopBridge(req, state)) return sendJson(res, 403, { error: "Desktop license bridge authorization failed." });
+      const body = await readJson(req);
+      if (req.method === "POST") {
+        state.permissionBroker.require("license:activate", body, { route: url.pathname, method: req.method });
+        return sendJson(res, 200, state.licenseService.activateRuntime(body.token, { removeLegacy: true }));
+      }
+      if (req.method === "DELETE") {
+        state.permissionBroker.require("license:delete", body, { route: url.pathname, method: req.method });
+        return sendJson(res, 200, state.licenseService.clearRuntime({ removeLegacy: true }));
+      }
+    }
     if (url.pathname === "/api/secrets") {
       return sendJson(res, 200, {
         providers: {
@@ -173,10 +185,16 @@ async function handleApi(req, res, url, state) {
       }
     }
     if (url.pathname === "/api/license") {
+      if (req.method === "DELETE") {
+        const body = await readJson(req);
+        state.permissionBroker.require("license:delete", body, { route: url.pathname, method: req.method });
+        return sendJson(res, 200, state.licenseService.clearRuntime({ removeLegacy: true }));
+      }
       return sendJson(res, 200, state.licenseService.status());
     }
     if (url.pathname === "/api/license/activate" && req.method === "POST") {
       const body = await readJson(req);
+      state.permissionBroker.require("license:activate", body, { route: url.pathname, method: req.method });
       return sendJson(res, 200, state.licenseService.activate(body.token));
     }
     if (url.pathname === "/api/threads") {
@@ -1109,6 +1127,7 @@ function publicLicenseStatus(status) {
     allowed: Boolean(status?.allowed),
     mode: status?.mode || "unknown",
     edition: status?.edition || null,
+    source: status?.source || null,
     reason: status?.reason || ""
   };
 }
@@ -1202,7 +1221,7 @@ function renderHtml(manifest, security) {
     async function verifyReleaseUpdate(){const raw=prompt("Paste signed update manifest JSON","");if(!raw)return;const envelope=JSON.parse(raw);const data=await api("/api/release-update/verify",{method:"POST",body:JSON.stringify({envelope,intent:intent("release-update:verify")})});addMessage("agent","Release update verified:\\n"+JSON.stringify(data,null,2))}
     async function saveProviderKey(provider){const value=prompt(provider+" API key","");if(!value)return;const data=await api("/api/secrets/"+encodeURIComponent(provider),{method:"POST",body:JSON.stringify({value,label:provider+" key",intent:intent("provider-key:set")})});addMessage("agent",provider+" key saved: "+JSON.stringify(data))}
     async function providerKeyStatus(){const data=await api("/api/secrets");addMessage("agent","Provider keys:\\n"+JSON.stringify(data,null,2))}
-    async function license(){const status=await api("/api/license");if(status.allowed&&status.mode==="experimental"){addMessage("agent","License: Preview mode. Commercial key is not required yet.");return}const token=prompt(status.reason+"\nPaste the admin-provided signed license token, or Cancel:","");if(!token)return;const activated=await api("/api/license/activate",{method:"POST",body:JSON.stringify({token})});addMessage("agent","License activated: "+activated.edition)}
+    async function license(){const status=await api("/api/license");if(status.allowed&&status.mode==="experimental"){addMessage("agent","License: Preview mode. Commercial key is not required yet.");return}const token=prompt(status.reason+"\nPaste the admin-provided signed license token, or Cancel:","");if(!token)return;const activated=await api("/api/license/activate",{method:"POST",body:JSON.stringify({token,intent:intent("license:activate")})});addMessage("agent","License activated: "+activated.edition)}
     $("connect").onclick=()=>connect().catch(err=>$("status").textContent=err.message);$("refresh").onclick=()=>refreshTools().catch(err=>$("status").textContent=err.message);$("send").onclick=send;$("prompt").addEventListener("keydown",(event)=>{if(event.ctrlKey&&event.key==="Enter")send()});
     if($("saveProfile"))$("saveProfile").onclick=saveProfile;if($("loadProfiles"))$("loadProfiles").onclick=manageProfiles;if($("exportProfiles"))$("exportProfiles").onclick=exportProfiles;
     if($("skills"))$("skills").onclick=listSkills;if($("readSkill"))$("readSkill").onclick=readSkill;if($("validateSkills"))$("validateSkills").onclick=validateSkills;
