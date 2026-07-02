@@ -1,44 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 220" width="880" height="220" role="img" aria-label="Local Coding Agent">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 220" width="880" height="220" role="img" aria-label="ChatGPT Web Agent Harness">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b0f17"/>
-      <stop offset="1" stop-color="#0f1a2e"/>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0e1a;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#10162e;stop-opacity:1"/>
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#2dd4bf"/>
-      <stop offset="0.5" stop-color="#60a5fa"/>
-      <stop offset="1" stop-color="#a78bfa"/>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#10a37f;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#2dd4bf;stop-opacity:1"/>
     </linearGradient>
-    <style>
-      .title { font: 700 46px 'Segoe UI', system-ui, sans-serif; fill: url(#accent); }
-      .sub   { font: 400 18px 'Segoe UI', system-ui, sans-serif; fill: #9fb0c9; }
-      .mono  { font: 600 16px 'Consolas', ui-monospace, monospace; fill: #5eead4; }
-      .cursor{ fill: #5eead4; animation: blink 1.1s steps(1) infinite; }
-      @keyframes blink { 50% { opacity: 0; } }
-      .sweep { animation: move 3.6s ease-in-out infinite; }
-      @keyframes move { 0%,100% { transform: translateX(0); } 50% { transform: translateX(26px); } }
-      .ring  { animation: pulse 2.6s ease-in-out infinite; transform-origin: 740px 132px; }
-      @keyframes pulse { 0%,100% { opacity: .30; transform: scale(.94);} 50% { opacity: 1; transform: scale(1.06);} }
-    </style>
   </defs>
-
+  <style>
+    .title { font: bold 32px -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica; fill: #e2e8f0; }
+    .sub { font: 16px -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica; fill: #94a3b8; }
+    .mono { font: 14px 'SF Mono',Monaco,'Cascadia Code',Consolas,monospace; fill: #64748b; }
+    .cursor { animation: blink 1s step-end infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+  </style>
   <rect width="880" height="220" rx="20" fill="url(#bg)"/>
   <rect x="1" y="1" width="878" height="218" rx="19" fill="none" stroke="#1e2b44" stroke-width="2"/>
-
-  <g transform="translate(44,42)">
-    <circle cx="0"  cy="0" r="6" fill="#f87171"/>
-    <circle cx="22" cy="0" r="6" fill="#fbbf24"/>
-    <circle cx="44" cy="0" r="6" fill="#34d399"/>
-  </g>
-
-  <text x="44" y="120" class="title">Local Coding Agent</text>
-  <text x="46" y="152" class="sub">ChatGPT Web &#8594; your own machine, via MCP</text>
-  <text x="46" y="188" class="mono">$ call workspace_info<tspan class="cursor"> &#9613;</tspan></text>
-
+  <circle cx="60" cy="48" r="5" fill="#ef4444"/>
+  <circle cx="82" cy="48" r="5" fill="#eab308"/>
+  <circle cx="104" cy="48" r="5" fill="#22c55e"/>
+  <text x="44" y="120" class="title">ChatGPT Web Agent Harness</text>
+  <text x="46" y="152" class="sub">MCP harness for ChatGPT Web — local sandbox, web search, review gates, verify done.</text>
+  <text x="46" y="188" class="mono">$ call sandbox_exec<span class="cursor"> &#9613;</span></text>
   <rect class="sweep" x="586" y="70" width="238" height="6" rx="3" fill="url(#accent)" opacity="0.85"/>
-  <g class="ring">
-    <circle cx="740" cy="132" r="44" fill="none" stroke="url(#accent)" stroke-width="2.5"/>
-    <circle cx="740" cy="132" r="28" fill="none" stroke="#60a5fa" stroke-width="2" opacity="0.6"/>
-    <circle cx="740" cy="132" r="6"  fill="#2dd4bf"/>
-  </g>
+  <circle cx="740" cy="132" r="44" fill="none" stroke="url(#accent)" stroke-width="2.5"/>
+  <circle cx="740" cy="132" r="28" fill="none" stroke="#60a5fa" stroke-width="2" opacity="0.6"/>
+  <circle cx="740" cy="132" r="12" fill="#10a37f" opacity="0.8"/>
 </svg>
