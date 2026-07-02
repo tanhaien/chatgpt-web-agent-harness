@@ -1,0 +1,89 @@
+import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { createUpdateEnvelope, UpdateService } from "../core/update-service.mjs";
+
+const manifest = {
+  productName: "Local Agent Studio",
+  version: "v5.0.0",
+  buildNumber: 500000,
+  channel: "local-agent-studio",
+  releaseStage: "stable"
+};
+
+test("update service verifies signed manifests and persists rollback guard", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const storage = mkdtempSync(join(tmpdir(), "lca-update-"));
+  try {
+    const service = new UpdateService({
+      storageDir: storage,
+      manifest,
+      publicKeyPem: publicKey.export({ type: "spki", format: "pem" }),
+      now: () => Date.parse("2026-07-02T00:00:00.000Z")
+    });
+    const envelope = createUpdateEnvelope({
+      payload: updatePayload({ buildNumber: 500100, version: "v5.0.1" }),
+      privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" })
+    });
+    const verified = service.verifyEnvelope(envelope);
+    assert.equal(verified.verified, true);
+    assert.equal(verified.update.available, true);
+    assert.equal(service.status().highestVerifiedBuild, 500100);
+
+    const older = createUpdateEnvelope({
+      payload: updatePayload({ buildNumber: 500050, version: "v5.0.0+rollback" }),
+      privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" })
+    });
+    assert.throws(() => service.verifyEnvelope(older), /roll back/);
+  } finally {
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+test("update service rejects tampered signatures and unsafe artifacts", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const storage = mkdtempSync(join(tmpdir(), "lca-update-tamper-"));
+  try {
+    const service = new UpdateService({
+      storageDir: storage,
+      manifest,
+      publicKeyPem: publicKey.export({ type: "spki", format: "pem" })
+    });
+    const envelope = createUpdateEnvelope({
+      payload: updatePayload({ buildNumber: 500100, version: "v5.0.1" }),
+      privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" })
+    });
+    const decoded = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8"));
+    decoded.artifacts[0].url = "https://example.com/evil.exe";
+    envelope.payload = Buffer.from(JSON.stringify(decoded)).toString("base64url");
+    assert.throws(() => service.verifyEnvelope(envelope), /signature is invalid/);
+
+    assert.throws(() => createUpdateEnvelope({
+      payload: updatePayload({ buildNumber: 500200, version: "v5.0.2", url: "http://example.com/app.exe" }),
+      privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" })
+    }), /must use HTTPS/);
+  } finally {
+    rmSync(storage, { recursive: true, force: true });
+  }
+});
+
+function updatePayload({ buildNumber, version, url = "https://downloads.example.com/LocalAgentStudio.exe" }) {
+  return {
+    channel: "local-agent-studio",
+    version,
+    buildNumber,
+    minAppVersion: "v5.0.0",
+    publishedAt: "2026-07-02T00:00:00.000Z",
+    releaseNotesUrl: "https://github.com/LongNgn204/local-coding-agent/releases",
+    artifacts: [{
+      platform: "win32",
+      arch: "x64",
+      url,
+      sha256: "a".repeat(64),
+      size: 123456
+    }]
+  };
+}

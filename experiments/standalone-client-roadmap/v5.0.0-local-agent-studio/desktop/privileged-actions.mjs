@@ -34,6 +34,13 @@ export function buildPrivilegedRequest(request = {}) {
       return jsonRequest("POST", "/api/support-bundle", {
         intent: intent("support-bundle:export")
       });
+    case "releaseUpdate:verify":
+      if (!payload.envelope || typeof payload.envelope !== "object") throw new Error("Signed update envelope is required.");
+      return jsonRequest("POST", "/api/release-update/verify", {
+        envelope: payload.envelope,
+        persist: payload.persist !== false,
+        intent: intent("release-update:verify")
+      });
     case "tool:call":
       return jsonRequest("POST", "/api/call-tool", {
         name: safeToolName(payload.name),
@@ -66,6 +73,7 @@ export function privilegedActionNames() {
     "mcpServer:start",
     "mcpServer:stop",
     "supportBundle:export",
+    "releaseUpdate:verify",
     "tool:call",
     "approval:mutate",
     "customerUpdate:run"

@@ -25,6 +25,7 @@ test("desktop privileged action mapping is a small explicit allowlist", () => {
     "mcpServer:stop",
     "providerKey:delete",
     "providerKey:set",
+    "releaseUpdate:verify",
     "supportBundle:export",
     "tool:call"
   ].sort());

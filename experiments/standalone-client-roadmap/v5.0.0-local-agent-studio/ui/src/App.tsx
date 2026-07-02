@@ -58,8 +58,19 @@ type HealthPayload = {
   security?: Record<string, unknown>;
   features?: string[];
   providers?: ProviderStatus[];
+  updates?: UpdateStatus;
   openai_key_present?: boolean;
   anthropic_key_present?: boolean;
+};
+
+type UpdateStatus = {
+  enabled?: boolean;
+  mode?: string;
+  currentVersion?: string;
+  currentBuild?: number;
+  channel?: string;
+  highestVerifiedBuild?: number;
+  reason?: string;
 };
 
 type ProviderStatus = {
@@ -322,6 +333,28 @@ export function App() {
     setNotice(`${providerId} key removed`);
   }
 
+  async function verifyReleaseUpdate() {
+    const raw = window.prompt("Paste signed update manifest JSON", "");
+    if (!raw) return;
+    let envelope: Record<string, unknown>;
+    try {
+      envelope = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      setNotice("Update manifest JSON is invalid");
+      return;
+    }
+    const result = await privilegedApi<{ verified?: boolean; update?: { version?: string; available?: boolean } }>(
+      "releaseUpdate:verify",
+      { envelope },
+      () => api("/api/release-update/verify", {
+        method: "POST",
+        body: JSON.stringify({ envelope, intent: intent("release-update:verify") })
+      })
+    );
+    setNotice(`Update ${result.update?.version || "manifest"} verified${result.update?.available ? " / available" : ""}`);
+    await boot();
+  }
+
   function applyPreset(id: string) {
     const preset = presets.find((entry) => entry.id === id);
     if (!preset) return;
@@ -443,6 +476,18 @@ export function App() {
             onSave={() => void saveProviderKey("anthropic")}
             onDelete={() => void deleteProviderKey("anthropic")}
           />
+        </section>
+
+        <section>
+          <h2><RefreshCw size={16} /> Updates</h2>
+          <div className="update-row">
+            <div>
+              <strong>{health?.updates?.currentVersion || "v5 preview"}</strong>
+              <span>{health?.updates?.channel || "local"} / build {health?.updates?.currentBuild || 0}</span>
+              <span>verified {health?.updates?.highestVerifiedBuild || health?.updates?.currentBuild || 0}</span>
+            </div>
+            <button title="Verify signed update manifest" disabled={!health?.updates?.enabled} onClick={() => void verifyReleaseUpdate()}><ShieldCheck size={15} /></button>
+          </div>
         </section>
 
         <section>

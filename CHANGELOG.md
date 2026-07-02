@@ -43,6 +43,9 @@ follows [Semantic Versioning](https://semver.org/).
   supports `LCA_NODE_PATH`, packaged runtimes under `runtimes/node/<platform>`,
   source-tree runtimes for preview testing, and system Node fallback, with
   `runtime:verify` checks for release CI.
+- Studio v5 now verifies signed release update manifests with Ed25519, artifact
+  SHA-256 metadata, channel/product checks, and rollback protection. Release CI
+  can generate envelopes with `npm run update:manifest`.
 
 ## [4.4.0-pro] - 2026-07-01
 

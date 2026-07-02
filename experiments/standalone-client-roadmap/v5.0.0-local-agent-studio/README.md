@@ -93,6 +93,28 @@ Release CI should place the runtime files and run:
 npm run runtime:verify -- --require-bundled
 ```
 
+## Signed Release Updates
+
+Preview can verify signed update manifests before any updater downloads or
+installs a new app version. The verifier checks:
+
+- Ed25519 signature from `LCA_UPDATE_PUBLIC_KEY_PEM`, `update-public-key.pem`,
+  or the release public key fallback.
+- product and channel match.
+- HTTPS artifact URLs.
+- SHA-256 artifact hashes.
+- build number is not older than the current app or a previously verified build.
+
+Generate a signed update manifest outside the app:
+
+```powershell
+$env:LCA_UPDATE_SIGNING_PRIVATE_KEY_FILE="C:\\secure\\update-private-key.pem"
+npm run update:manifest -- --version v5.0.1 --build-number 500100 --platform win32 --arch x64 --artifact dist\\LocalAgentStudio.exe --url https://example.com/LocalAgentStudio.exe --out update-manifest.json
+```
+
+The private update signing key must never be committed, bundled, logged, or sent
+to customers.
+
 ## Provider Keys
 
 Preview can use provider keys from either environment variables or the local
@@ -258,6 +280,28 @@ Release CI nên đặt runtime file vào đúng layout rồi chạy:
 ```powershell
 npm run runtime:verify -- --require-bundled
 ```
+
+## Signed Release Updates
+
+Preview có thể verify update manifest đã ký trước khi updater tải hoặc cài bản
+mới. Verifier kiểm tra:
+
+- Chữ ký Ed25519 từ `LCA_UPDATE_PUBLIC_KEY_PEM`, `update-public-key.pem`, hoặc
+  fallback sang release public key.
+- Product và channel phải khớp.
+- Artifact URL phải dùng HTTPS.
+- Artifact phải có SHA-256 hash.
+- Build number không được cũ hơn app hiện tại hoặc build đã verify trước đó.
+
+Tạo signed update manifest ở bên ngoài app:
+
+```powershell
+$env:LCA_UPDATE_SIGNING_PRIVATE_KEY_FILE="C:\\secure\\update-private-key.pem"
+npm run update:manifest -- --version v5.0.1 --build-number 500100 --platform win32 --arch x64 --artifact dist\\LocalAgentStudio.exe --url https://example.com/LocalAgentStudio.exe --out update-manifest.json
+```
+
+Private key ký update tuyệt đối không được commit, bundle, ghi vào log hoặc gửi
+cho khách hàng.
 
 ## Provider Keys
 

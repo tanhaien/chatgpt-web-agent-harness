@@ -8,6 +8,7 @@ const ACTIONS = new Map([
   ["mcp-server:stop", { risk: "high", confirmation: "mcp-server:stop" }],
   ["approval:mutate", { risk: "high", confirmation: "approval:mutate" }],
   ["support-bundle:export", { risk: "sensitive", confirmation: "support-bundle:export" }],
+  ["release-update:verify", { risk: "high", confirmation: "release-update:verify" }],
   ["customer-update:run", { risk: "high", confirmation: "customer-update:run" }]
 ]);
 

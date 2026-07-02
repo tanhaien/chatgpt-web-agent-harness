@@ -362,11 +362,34 @@ pre {
 
 .tool-chip,
 .timeline-event,
-.key-row {
+.key-row,
+.update-row {
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 9px;
+}
+
+.update-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 34px;
+}
+
+.update-row strong,
+.update-row span {
+  display: block;
+  font-size: 11px;
+}
+
+.update-row strong {
+  color: var(--soft);
+  font-size: 12px;
+}
+
+.update-row span {
+  color: var(--muted);
 }
 
 .key-row {

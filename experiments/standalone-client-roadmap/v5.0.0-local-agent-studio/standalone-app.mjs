@@ -16,6 +16,7 @@ import { redactForSupport } from "./core/redaction.mjs";
 import { createStudioSecurity } from "./core/security.mjs";
 import { SecretStore, assertProvider } from "./core/secret-store.mjs";
 import { ThreadStore } from "./core/thread-store.mjs";
+import { UpdateService, loadUpdatePublicKey } from "./core/update-service.mjs";
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const UI_DIST_DIR = join(APP_DIR, "dist", "ui");
@@ -33,6 +34,11 @@ export function startStudio(manifest) {
   const threadStore = new ThreadStore(join(storageDir, "studio.db"));
   const secretStore = new SecretStore(storageDir);
   const permissionBroker = new PermissionBroker({ strict: process.env.LCA_PERMISSION_BROKER !== "off" });
+  const updateService = new UpdateService({
+    storageDir,
+    manifest,
+    publicKeyPem: loadUpdatePublicKey(APP_DIR)
+  });
   const licenseService = new LicenseService({
     storageDir,
     manifest,
@@ -59,6 +65,7 @@ export function startStudio(manifest) {
     threadStore,
     secretStore,
     permissionBroker,
+    updateService,
     licenseService,
     integrityService
   };
@@ -115,6 +122,14 @@ async function handleApi(req, res, url, state) {
         summary: state.permissionBroker.summary(),
         audit: state.permissionBroker.publicAudit(url.searchParams.get("limit") || 100)
       });
+    }
+    if (url.pathname === "/api/release-update/status") {
+      return sendJson(res, 200, state.updateService.status());
+    }
+    if (url.pathname === "/api/release-update/verify" && req.method === "POST") {
+      const body = await readJson(req);
+      state.permissionBroker.require("release-update:verify", body, { route: url.pathname, method: req.method });
+      return sendJson(res, 200, state.updateService.verifyEnvelope(body.envelope, { persist: body.persist !== false }));
     }
     if (url.pathname === "/api/secrets") {
       return sendJson(res, 200, {
@@ -350,6 +365,7 @@ function healthPayload(state) {
     security: { loopback_only: true, session_token_required: true, origin_guard: true, permission_broker: state.permissionBroker.summary() },
     license: publicLicenseStatus(state.licenseService.status()),
     integrity: state.integrityService.status(),
+    updates: state.updateService.status(),
     openai_key_present: false,
     anthropic_key_present: false,
     ollama_url: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434"
@@ -782,6 +798,7 @@ async function writeSupportBundle(state) {
       ms: event.ms
     })),
     permissions: state.permissionBroker.publicAudit(100),
+    updates: redactForSupport(state.updateService.status()),
     tools: publicTools(state.tools),
     redaction: "Sensitive keys, credentials, private keys, authorization values, and secret-like strings are recursively redacted."
   };
@@ -1101,6 +1118,7 @@ function renderHtml(manifest, security) {
       ${features.has("fileViewer") ? `<button class="secondary" id="readFile">Read File</button> <button class="secondary" id="diff">Git Diff</button>` : ""}
       ${features.has("supportBundle") ? `<h2>Support</h2><button class="secondary" id="support">Export Support Bundle</button>` : ""}
       ${features.has("customerUpdateFlow") ? `<h2>Update</h2><button class="secondary" id="update">Run Guarded Update</button>` : ""}
+      ${features.has("signedUpdates") ? `<h2>Release Updates</h2><button class="secondary" id="updateStatus">Status</button> <button class="secondary" id="verifyUpdate">Verify Manifest</button>` : ""}
       <h2>Provider Keys</h2><button class="secondary" id="saveOpenAiKey">Save OpenAI</button> <button class="secondary" id="saveAnthropicKey">Save Anthropic</button> <button class="secondary" id="providerKeys">Status</button>
       <h2>License</h2><button class="secondary" id="license">Status / Activate</button>
       <h2>Tools</h2><div class="tools" id="tools"></div>
@@ -1150,6 +1168,8 @@ function renderHtml(manifest, security) {
     async function serverStatus(){const data=await api("/api/server/status");addMessage("agent","Server status:\\n"+JSON.stringify(data,null,2))}
     async function supportBundle(){const data=await api("/api/support-bundle",{method:"POST",body:JSON.stringify({intent:intent("support-bundle:export")})});addMessage("agent","Support bundle written:\\n"+data.path)}
     async function runUpdate(){if(prompt('Type "update" to run guarded repository update','')!=="update")return;const data=await api("/api/update",{method:"POST",body:JSON.stringify({confirm:"update",intent:intent("customer-update:run")})});addMessage("agent","Update "+(data.ok?"completed":"failed")+":\\n"+data.stdout+"\\n"+data.stderr)}
+    async function releaseUpdateStatus(){const data=await api("/api/release-update/status");addMessage("agent","Release update status:\\n"+JSON.stringify(data,null,2))}
+    async function verifyReleaseUpdate(){const raw=prompt("Paste signed update manifest JSON","");if(!raw)return;const envelope=JSON.parse(raw);const data=await api("/api/release-update/verify",{method:"POST",body:JSON.stringify({envelope,intent:intent("release-update:verify")})});addMessage("agent","Release update verified:\\n"+JSON.stringify(data,null,2))}
     async function saveProviderKey(provider){const value=prompt(provider+" API key","");if(!value)return;const data=await api("/api/secrets/"+encodeURIComponent(provider),{method:"POST",body:JSON.stringify({value,label:provider+" key",intent:intent("provider-key:set")})});addMessage("agent",provider+" key saved: "+JSON.stringify(data))}
     async function providerKeyStatus(){const data=await api("/api/secrets");addMessage("agent","Provider keys:\\n"+JSON.stringify(data,null,2))}
     async function license(){const status=await api("/api/license");if(status.allowed&&status.mode==="experimental"){addMessage("agent","License: Preview mode. Commercial key is not required yet.");return}const token=prompt(status.reason+"\nPaste the admin-provided signed license token, or Cancel:","");if(!token)return;const activated=await api("/api/license/activate",{method:"POST",body:JSON.stringify({token})});addMessage("agent","License activated: "+activated.edition)}
@@ -1159,6 +1179,7 @@ function renderHtml(manifest, security) {
     if($("metrics"))$("metrics").onclick=showMetrics;if($("approvals"))$("approvals").onclick=manageApprovals;if($("readFile"))$("readFile").onclick=readWorkspaceFile;if($("diff"))$("diff").onclick=showDiff;
     if($("startServer"))$("startServer").onclick=startServer;if($("stopServer"))$("stopServer").onclick=stopServer;if($("serverStatus"))$("serverStatus").onclick=serverStatus;
     if($("support"))$("support").onclick=supportBundle;if($("update"))$("update").onclick=runUpdate;
+    if($("updateStatus"))$("updateStatus").onclick=releaseUpdateStatus;if($("verifyUpdate"))$("verifyUpdate").onclick=verifyReleaseUpdate;
     $("saveOpenAiKey").onclick=()=>saveProviderKey("openai");$("saveAnthropicKey").onclick=()=>saveProviderKey("anthropic");$("providerKeys").onclick=providerKeyStatus;
     $("newThread").onclick=newThread;$("loadThreads").onclick=loadThreads;$("license").onclick=license;health();
   </script>
