@@ -15,7 +15,6 @@
   <img alt="ChatGPT Web" src="https://img.shields.io/badge/ChatGPT%20Web-MCP%20connector-10a37f?logo=openai&logoColor=white" />
   <img alt="OpenAI Codex" src="https://img.shields.io/badge/Codex-compatible-412991?logo=openai&logoColor=white" />
   <img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-compatible-D97757?logo=anthropic&logoColor=white" />
-  <img alt="SSH Tunnel" src="https://img.shields.io/badge/SSH%20Tunnel-v2-22c55e" />
   <img alt="Docker" src="https://img.shields.io/badge/Docker%20sandbox-2496ED?logo=docker&logoColor=white" />
 </p>
 
@@ -25,7 +24,7 @@
 
 > **Fullstack MCP harness for ChatGPT Web (Codex Web) — turn ChatGPT's GPT-5.5 into a full-stack local coding agent with Docker sandboxed execution, web search, review gates, and verification.**
 >
-> Fork of [LongNgn204/local-coding-agent](https://github.com/LongNgn204/local-coding-agent) with SSH tunnel support, `sandbox_exec` for Docker-isolated code execution, dynamic workspace switching, and enhanced VN stock data tools.
+> Fork of [LongNgn204/local-coding-agent](https://github.com/LongNgn204/local-coding-agent) with `sandbox_exec` for Docker-isolated code execution and dynamic workspace switching.
 
 ---
 
@@ -60,8 +59,6 @@ bash scripts/start-tunnel.sh
 # → Connect MCP server → tools appear automatically
 ```
 
-> **Need SSH instead of OpenAI Tunnel?** See `docs/SSH_TUNNEL.md`.
-
 #### Verify it works
 
 ```bash
@@ -85,23 +82,24 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 │           Plans → Codes → Reviews → Verifies             │
 └────────────────────────┬────────────────────────────────┘
                          │ OpenAI Secure MCP Tunnel
-                         │ or SSH Tunnel (this fork)
                          ▼
 ┌─────────────────────────────────────────────────────────┐
 │             LCA MCP Server  (server/server.mjs)          │
 │             Node.js · port 8787 · Zod schemas            │
 ├─────────────────────────────────────────────────────────┤
 │  Tools:                                                  │
-│  · sandbox_exec   — Docker-isolated code execution       │
-│  · web_search     — DuckDuckGo search (no API key)       │
-│  · web_fetch      — URL content → markdown               │
+│  · ping           — health check                         │
+│  · read_file      — read file with offset/limit          │
+│  · write_file     — write entire file                    │
+│  · run_commands   — batch commands (up to 12)            │
+│  · search_text    — ripgrep-backed content search        │
+│  · web_search     — DuckDuckGo search (no API key)      │
+│  · web_fetch      — URL content → markdown              │
+│  · git_status/diff— git operations                       │
+│  · sandbox_exec   — Docker-isolated code execution      │
 │  · set_workspace  — switch repo without restart          │
-│  · file ops       — read/write/patch/search files        │
-│  · git ops        — status/log/diff/show                │
-│  · review_changes — diff-based code review gate          │
-│  · verify_done    — checklist + evidence gate            │
+│  · verify_done    — evidence gate                        │
 │  · quality_gate   — lint/test/build gate                │
-│  · plan_task      — structured plan generation           │
 │  · workspace_*    — snapshot, doctor, info              │
 │  · skills/policy  — project conventions & rules          │
 └─────────────────────────────────────────────────────────┘
@@ -116,11 +114,9 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 | Local file system | ❌ | ✅ Full read/write/patch |
 | Docker sandbox exec | ❌ | ✅ `sandbox_exec` (this fork) |
 | Web search | ❌ | ✅ DuckDuckGo (free, no API key) |
-| Code review gate | ❌ | ✅ `review_changes` + `verify_done` |
+| Code review gate | ❌ | ✅ `verify_done` evidence gate |
 | MCP routing | ❌ | ✅ Native stdio MCP |
-| SSH tunnel (cloud→local) | ❌ | ✅ (this fork) |
 | Dynamic workspace switch | ❌ | ✅ `set_workspace` (this fork) |
-| VN stock data tools | ❌ | ✅ vnstock integration (this fork) |
 
 ---
 
@@ -128,10 +124,8 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 
 - **sandbox_exec** — Docker-isolated code execution (pytest, npm test, cargo build, etc.)
 - **set_workspace** — switch repo at runtime, no restart needed
-- **SSH tunnel** — connect via SSH instead of OpenAI's tunnel
-- **vn_data Bridge** — Vietnamese stock data via vnstock
 - **AGENTS.md** — structured agent workflow playbook
-- **enhanced review gate** — review_changes + verify_done with evidence collection
+- **verify_done** — formal evidence gate for task completion
 
 ---
 
@@ -142,25 +136,20 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 |---|---|
 | `sandbox_exec` | Run code in Docker container — isolated, repeatable |
 | `set_workspace` | Switch workspace repo dynamically |
-| `vn_get_quotes` | Fetch VN stock OHLCV data |
-| `vn_scan_momentum` | Scan VN stocks for momentum signals |
-| `vn_check_signal` | Check entry/SL/RSI signals |
-| `vn_get_index` | VN-Index / VN30 data |
 
 #### Built-in (from LCA core)
 | Tool | Description |
 |---|---|
 | `ping` | Health check |
-| `read_file` / `write_file` / `patch` | File operations |
-| `search_files` | Ripgrep-backed content/file search |
-| `git_status` / `git_log` / `git_diff` / `git_show` | Git operations |
+| `read_file` / `write_file` | File read/write |
+| `run_commands` | Batch command execution (up to 12) |
+| `search_text` | Ripgrep-backed content search |
 | `web_search` / `web_fetch` | Web research (DuckDuckGo) |
-| `review_changes` | Diff-based code review |
+| `git_status` / `git_diff` | Git operations |
 | `verify_done` | Verification with evidence gate |
 | `quality_gate` | Lint/test/build gate |
-| `plan_task` | Structured plan generation |
 | `workspace_info` / `workspace_snapshot` / `workspace_doctor` | Workspace introspection |
-| `list_tools` / `list_skills` / `policy_status` | MCP metadata |
+| `list_skills` / `policy_status` | MCP metadata |
 
 ---
 
@@ -168,13 +157,13 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 
 ```
 EVERY non-trivial task:
-  1. plan_task(description)  → structured plan
+  1. Plan the task with the user → structured plan
   2. Present → wait for confirmation
   3. For each sub-task:
-     a. Edit code (read_file → patch / write_file)
+     a. Edit code (read_file → write_file)
      b. Run tests via sandbox_exec (NOT execute_command)
      c. Fix failures (max 3 retries)
-     d. Call review_changes
+     d. Review changes before moving on
   4. Call verify_done with evidence
   5. Report: DONE ✅ or BLOCKED ❌ with reason
 ```
@@ -269,15 +258,14 @@ bash scripts/start-tunnel.sh
 ### Kiến Trúc
 
 ```
-ChatGPT Web (Codex Web)  ← OpenAI Tunnel / SSH Tunnel
+ChatGPT Web (Codex Web)  ← OpenAI Tunnel
         │
         ▼
   LCA MCP Server (port 8787)
         │
-        ├── 📁 File ops (read/write/patch/search)
+        ├── 📁 File ops (read/write)
         ├── 🐳 Docker sandbox (sandbox_exec)
         ├── 🌐 Web search (DuckDuckGo)
-        ├── 📊 VN stock data (vnstock)
         └── ✅ Review + verify gates
 ```
 
@@ -287,10 +275,9 @@ ChatGPT Web (Codex Web)  ← OpenAI Tunnel / SSH Tunnel
 |---|---|
 | `sandbox_exec` | Chạy code trong Docker — cô lập, an toàn |
 | `set_workspace` | Chuyển repo workspace không cần restart |
-| SSH Tunnel | Kết nối cloud→local thay cho OpenAI Tunnel |
+| `set_workspace` | Chuyển repo workspace không cần restart |
 | AGENTS.md | Playbook cho AI agent — workflow chuẩn |
-| Review gate | `review_changes` + `verify_done` |
-| VN stock data | Lấy dữ liệu chứng khoán Việt Nam |
+| `verify_done` | Evidence gate |
 
 ### An Toàn
 
