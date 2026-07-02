@@ -50,6 +50,25 @@ test("Studio HTTP boundary blocks CSRF and persists authenticated threads", asyn
     });
     assert.equal(simpleRequest.status, 415);
 
+    const fakeSecret = "sk-test-http-secret-123";
+    const savedSecret = await fetch(`http://127.0.0.1:${port}/api/secrets/openai`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-lca-studio-token": token },
+      body: JSON.stringify({ value: fakeSecret, label: "HTTP Test" })
+    });
+    assert.equal(savedSecret.status, 200);
+    assert.equal(JSON.stringify(await savedSecret.json()).includes(fakeSecret), false);
+
+    const secretStatus = await fetch(`http://127.0.0.1:${port}/api/secrets`, {
+      headers: { "x-lca-studio-token": token }
+    });
+    assert.equal(secretStatus.status, 200);
+    assert.equal(JSON.stringify(await secretStatus.json()).includes(fakeSecret), false);
+
+    const health = await fetch(`http://127.0.0.1:${port}/api/health`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).openai_key_present, true);
+
     const created = await fetch(`http://127.0.0.1:${port}/api/threads`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-lca-studio-token": token },

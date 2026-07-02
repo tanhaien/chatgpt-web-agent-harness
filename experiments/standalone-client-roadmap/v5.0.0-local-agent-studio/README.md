@@ -14,6 +14,8 @@ workspace controls, diagnostics, and commercial-release guardrails.
   renderer sandboxing, denied permission prompts, and local-only navigation.
 - Workspace profiles, Skills controls, dashboard metrics, approvals, file
   preview, Git diff, support bundle export, and guarded customer update flow.
+- Provider key setup from the app UI for OpenAI and Anthropic, backed by a local
+  encrypted vault. The API returns only metadata, never the saved key value.
 - Loopback-only API boundary with Host/Origin validation, random per-process
   capability token, JSON-only mutation requests, CSP, no-sniff, anti-framing,
   restrictive permissions policy, and remote-MCP opt-in.
@@ -54,6 +56,19 @@ SQLite module.
 
 Production packaging should bundle or verify the runtime so customers do not
 need to install Node.js manually.
+
+## Provider Keys
+
+Preview can use provider keys from either environment variables or the local
+encrypted vault:
+
+- `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` remain supported.
+- Env keys are treated as readonly operator-managed secrets.
+- Keys saved in the app UI are encrypted locally under the Studio data directory.
+- `GET /api/secrets` and health/provider APIs return only status metadata.
+
+Stable should move this vault to the operating-system keychain or a platform
+credential manager before customer release.
 
 ## Build Desktop Package
 
@@ -110,6 +125,8 @@ workspace controls, diagnostics và các lớp kiểm soát để phát hành th
   renderer sandbox, từ chối permission prompt và chỉ cho điều hướng local.
 - Workspace profiles, Skills controls, dashboard metrics, approvals, file
   preview, Git diff, support bundle export và guarded customer update flow.
+- Setup provider key ngay trong UI cho OpenAI và Anthropic, dùng local encrypted
+  vault. API chỉ trả metadata, không trả giá trị key đã lưu.
 - API chỉ nghe loopback, kiểm tra Host/Origin, token ngẫu nhiên theo từng tiến
   trình, thao tác thay đổi chỉ nhận JSON, CSP, no-sniff, anti-framing,
   permissions policy chặt và remote MCP phải bật thủ công.
@@ -147,6 +164,18 @@ Electron. Launcher Preview hiện dùng binary `node` của máy, nên cần Nod
 
 Bản production nên bundle hoặc kiểm tra runtime để khách hàng không phải tự cài
 Node.js.
+
+## Provider Keys
+
+Preview có thể dùng provider key từ biến môi trường hoặc local encrypted vault:
+
+- Vẫn hỗ trợ `OPENAI_API_KEY` và `ANTHROPIC_API_KEY`.
+- Key từ env được xem là readonly secret do operator quản lý.
+- Key lưu trong UI được mã hóa cục bộ trong thư mục dữ liệu của Studio.
+- `GET /api/secrets` và API health/provider chỉ trả metadata trạng thái.
+
+Bản Stable nên chuyển vault này sang OS keychain hoặc credential manager của
+từng nền tảng trước khi phát hành cho khách hàng.
 
 ## Build Desktop Package
 

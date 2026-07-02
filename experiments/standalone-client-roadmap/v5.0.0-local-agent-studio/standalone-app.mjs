@@ -13,6 +13,7 @@ import { IntegrityService, loadReleasePublicKey } from "./core/integrity-service
 import { LicenseService, loadLicensePublicKey } from "./core/license-service.mjs";
 import { redactForSupport } from "./core/redaction.mjs";
 import { createStudioSecurity } from "./core/security.mjs";
+import { SecretStore, assertProvider } from "./core/secret-store.mjs";
 import { ThreadStore } from "./core/thread-store.mjs";
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,7 @@ export function startStudio(manifest) {
   const storageDir = getStorageDir(manifest.version);
   const security = createStudioSecurity({ host, port });
   const threadStore = new ThreadStore(join(storageDir, "studio.db"));
+  const secretStore = new SecretStore(storageDir);
   const licenseService = new LicenseService({
     storageDir,
     manifest,
@@ -53,6 +55,7 @@ export function startStudio(manifest) {
     serverLogs: [],
     security,
     threadStore,
+    secretStore,
     licenseService,
     integrityService
   };
@@ -96,13 +99,32 @@ export function startStudio(manifest) {
 async function handleApi(req, res, url, state) {
   try {
     if (url.pathname === "/api/health") {
-      return sendJson(res, 200, healthPayload(state));
+      return sendJson(res, 200, await enrichedHealthPayload(state));
     }
     if (url.pathname === "/api/providers") {
-      return sendJson(res, 200, providersPayload(state.manifest));
+      return sendJson(res, 200, await providersPayload(state));
     }
     if (url.pathname === "/api/model-presets") {
       return sendJson(res, 200, { presets: modelPresets(state.manifest) });
+    }
+    if (url.pathname === "/api/secrets") {
+      return sendJson(res, 200, {
+        providers: {
+          openai: await state.secretStore.providerStatus("openai"),
+          anthropic: await state.secretStore.providerStatus("anthropic")
+        }
+      });
+    }
+    const secretMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)$/);
+    if (secretMatch) {
+      const provider = decodeURIComponent(secretMatch[1]);
+      assertProvider(provider);
+      if (req.method === "GET") return sendJson(res, 200, await state.secretStore.providerStatus(provider));
+      if (req.method === "POST") {
+        const body = await readJson(req);
+        return sendJson(res, 200, await state.secretStore.set(provider, body.value, { label: body.label }));
+      }
+      if (req.method === "DELETE") return sendJson(res, 200, await state.secretStore.delete(provider));
     }
     if (url.pathname === "/api/license") {
       return sendJson(res, 200, state.licenseService.status());
@@ -288,24 +310,36 @@ function healthPayload(state) {
     connected: Boolean(state.client),
     tools: state.tools.length,
     features: state.manifest.features || [],
-    providers: providersPayload(state.manifest).providers,
+    providers: [],
     active_profile: state.activeProfile,
     repo_root: state.repoRoot,
     managed_server_pid: state.serverProcess?.pid || null,
     security: { loopback_only: true, session_token_required: true, origin_guard: true },
     license: publicLicenseStatus(state.licenseService.status()),
     integrity: state.integrityService.status(),
-    openai_key_present: Boolean(process.env.OPENAI_API_KEY),
-    anthropic_key_present: Boolean(process.env.ANTHROPIC_API_KEY),
+    openai_key_present: false,
+    anthropic_key_present: false,
     ollama_url: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434"
   };
 }
 
-function providersPayload(manifest) {
+async function enrichedHealthPayload(state) {
+  const payload = healthPayload(state);
+  const providers = await providersPayload(state);
+  payload.providers = providers.providers;
+  payload.openai_key_present = Boolean(providers.providers.find((provider) => provider.id === "openai")?.ready);
+  payload.anthropic_key_present = Boolean(providers.providers.find((provider) => provider.id === "anthropic")?.ready);
+  return payload;
+}
+
+async function providersPayload(state) {
+  const manifest = state.manifest;
   const enabled = new Set(manifest.providers || ["openai"]);
+  const openai = await state.secretStore.providerStatus("openai");
+  const anthropic = await state.secretStore.providerStatus("anthropic");
   const providers = [
-    { id: "openai", name: "OpenAI Responses API", enabled: enabled.has("openai"), ready: Boolean(process.env.OPENAI_API_KEY) },
-    { id: "anthropic", name: "Anthropic Messages API", enabled: enabled.has("anthropic"), ready: Boolean(process.env.ANTHROPIC_API_KEY) },
+    { id: "openai", name: "OpenAI Responses API", enabled: enabled.has("openai"), ready: Boolean(openai.configured), source: openai.source, readonly: openai.readonly },
+    { id: "anthropic", name: "Anthropic Messages API", enabled: enabled.has("anthropic"), ready: Boolean(anthropic.configured), source: anthropic.source, readonly: anthropic.readonly },
     { id: "ollama", name: "Ollama/local HTTP", enabled: enabled.has("ollama"), ready: true }
   ];
   return { providers };
@@ -387,7 +421,8 @@ async function chatWithTools(state, request) {
 }
 
 async function chatOpenAI(state, { message, model, history }) {
-  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set");
+  const apiKey = await state.secretStore.get("openai");
+  if (!apiKey) throw new Error("OpenAI API key is not configured. Add it in Provider Keys or set OPENAI_API_KEY.");
   const timeline = [];
   const input = [
     { role: "system", content: systemPrompt(state.manifest) },
@@ -399,7 +434,7 @@ async function chatOpenAI(state, { message, model, history }) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+        authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model,
@@ -422,7 +457,8 @@ async function chatOpenAI(state, { message, model, history }) {
 }
 
 async function chatAnthropic(state, { message, model, history }) {
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not set");
+  const apiKey = await state.secretStore.get("anthropic");
+  if (!apiKey) throw new Error("Anthropic API key is not configured. Add it in Provider Keys or set ANTHROPIC_API_KEY.");
   const timeline = [];
   const messages = providerMessages(history || [{ role: "user", content: message }]);
   let response = null;
@@ -431,7 +467,7 @@ async function chatAnthropic(state, { message, model, history }) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "x-api-key": apiKey,
         "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
@@ -700,7 +736,7 @@ async function writeSupportBundle(state) {
   }
   const report = {
     createdAt: new Date().toISOString(),
-    health: healthPayload(state),
+    health: await enrichedHealthPayload(state),
     server: redactForSupport(status),
     metrics: redactForSupport(metrics),
     approvals: redactForSupport(approvals),
@@ -1031,6 +1067,7 @@ function renderHtml(manifest, security) {
       ${features.has("fileViewer") ? `<button class="secondary" id="readFile">Read File</button> <button class="secondary" id="diff">Git Diff</button>` : ""}
       ${features.has("supportBundle") ? `<h2>Support</h2><button class="secondary" id="support">Export Support Bundle</button>` : ""}
       ${features.has("customerUpdateFlow") ? `<h2>Update</h2><button class="secondary" id="update">Run Guarded Update</button>` : ""}
+      <h2>Provider Keys</h2><button class="secondary" id="saveOpenAiKey">Save OpenAI</button> <button class="secondary" id="saveAnthropicKey">Save Anthropic</button> <button class="secondary" id="providerKeys">Status</button>
       <h2>License</h2><button class="secondary" id="license">Status / Activate</button>
       <h2>Tools</h2><div class="tools" id="tools"></div>
     </section>
@@ -1078,6 +1115,8 @@ function renderHtml(manifest, security) {
     async function serverStatus(){const data=await api("/api/server/status");addMessage("agent","Server status:\\n"+JSON.stringify(data,null,2))}
     async function supportBundle(){const data=await api("/api/support-bundle",{method:"POST",body:"{}"});addMessage("agent","Support bundle written:\\n"+data.path)}
     async function runUpdate(){if(prompt('Type "update" to run guarded repository update','')!=="update")return;const data=await api("/api/update",{method:"POST",body:JSON.stringify({confirm:"update"})});addMessage("agent","Update "+(data.ok?"completed":"failed")+":\\n"+data.stdout+"\\n"+data.stderr)}
+    async function saveProviderKey(provider){const value=prompt(provider+" API key","");if(!value)return;const data=await api("/api/secrets/"+encodeURIComponent(provider),{method:"POST",body:JSON.stringify({value,label:provider+" key"})});addMessage("agent",provider+" key saved: "+JSON.stringify(data))}
+    async function providerKeyStatus(){const data=await api("/api/secrets");addMessage("agent","Provider keys:\\n"+JSON.stringify(data,null,2))}
     async function license(){const status=await api("/api/license");if(status.allowed&&status.mode==="experimental"){addMessage("agent","License: Preview mode. Commercial key is not required yet.");return}const token=prompt(status.reason+"\nPaste the admin-provided signed license token, or Cancel:","");if(!token)return;const activated=await api("/api/license/activate",{method:"POST",body:JSON.stringify({token})});addMessage("agent","License activated: "+activated.edition)}
     $("connect").onclick=()=>connect().catch(err=>$("status").textContent=err.message);$("refresh").onclick=()=>refreshTools().catch(err=>$("status").textContent=err.message);$("send").onclick=send;$("prompt").addEventListener("keydown",(event)=>{if(event.ctrlKey&&event.key==="Enter")send()});
     if($("saveProfile"))$("saveProfile").onclick=saveProfile;if($("loadProfiles"))$("loadProfiles").onclick=manageProfiles;if($("exportProfiles"))$("exportProfiles").onclick=exportProfiles;
@@ -1085,6 +1124,7 @@ function renderHtml(manifest, security) {
     if($("metrics"))$("metrics").onclick=showMetrics;if($("approvals"))$("approvals").onclick=manageApprovals;if($("readFile"))$("readFile").onclick=readWorkspaceFile;if($("diff"))$("diff").onclick=showDiff;
     if($("startServer"))$("startServer").onclick=startServer;if($("stopServer"))$("stopServer").onclick=stopServer;if($("serverStatus"))$("serverStatus").onclick=serverStatus;
     if($("support"))$("support").onclick=supportBundle;if($("update"))$("update").onclick=runUpdate;
+    $("saveOpenAiKey").onclick=()=>saveProviderKey("openai");$("saveAnthropicKey").onclick=()=>saveProviderKey("anthropic");$("providerKeys").onclick=providerKeyStatus;
     $("newThread").onclick=newThread;$("loadThreads").onclick=loadThreads;$("license").onclick=license;health();
   </script>
 </body>

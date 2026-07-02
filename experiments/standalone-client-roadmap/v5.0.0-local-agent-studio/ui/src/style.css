@@ -361,11 +361,31 @@ pre {
 }
 
 .tool-chip,
-.timeline-event {
+.timeline-event,
+.key-row {
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 9px;
+}
+
+.key-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 34px 34px;
+  margin-bottom: 8px;
+}
+
+.key-row strong {
+  display: block;
+  font-size: 12px;
+}
+
+.key-row span {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
 }
 
 .timeline-list {

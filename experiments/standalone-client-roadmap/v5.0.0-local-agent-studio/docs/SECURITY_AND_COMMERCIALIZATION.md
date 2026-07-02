@@ -21,9 +21,12 @@ The Preview implements these baseline controls:
 7. The Electron renderer runs with `nodeIntegration=false`,
    `contextIsolation=true`, sandboxing enabled, denied permission prompts, and
    local-only navigation.
-8. Support bundles recursively redact credentials and omit raw tool arguments
+8. Provider keys can be stored in a local AES-256-GCM encrypted vault; APIs
+   return only metadata, and environment keys remain readonly operator-managed
+   overrides.
+9. Support bundles recursively redact credentials and omit raw tool arguments
    and results from the event list.
-9. SQLite persists threads without putting API credentials in the database.
+10. SQLite persists threads without putting API credentials in the database.
 
 This is defense in depth, not an operating-system sandbox. The Stable desktop
 app still needs typed IPC, OS-enforced workspace boundaries, network allowlists,
@@ -80,7 +83,8 @@ runtime isolation, and transparent release evidence are all required.
 ### Planned Stable Controls
 
 - Typed, allowlisted IPC instead of privileged localhost APIs.
-- OS keychain storage for provider credentials and license tokens.
+- OS keychain storage for provider credentials and license tokens, replacing
+  the Preview local encrypted vault.
 - OS-enforced workspace write boundaries.
 - Network disabled by default for model-generated commands.
 - One-time approvals for destructive, network, install, and out-of-root actions.
@@ -110,8 +114,10 @@ Preview hiện có các lớp bảo vệ cơ bản:
 6. Remote MCP bị tắt trừ khi operator chủ động bật.
 7. Electron renderer chạy với `nodeIntegration=false`, `contextIsolation=true`,
    sandbox bật, permission prompt bị từ chối và chỉ cho điều hướng local.
-8. Support Bundle redaction đệ quy và bỏ raw tool args/results khỏi event list.
-9. SQLite lưu thread nhưng không lưu API credential.
+8. Provider key có thể lưu trong local vault mã hóa AES-256-GCM; API chỉ trả
+   metadata, còn key từ env vẫn là readonly override do operator quản lý.
+9. Support Bundle redaction đệ quy và bỏ raw tool args/results khỏi event list.
+10. SQLite lưu thread nhưng không lưu API credential.
 
 Đây là defense in depth, chưa phải sandbox cấp hệ điều hành. Trước khi phát hành
 Stable cho khách, desktop app vẫn cần typed IPC, workspace boundary do hệ điều
@@ -166,7 +172,8 @@ code signing, runtime isolation và bằng chứng release minh bạch.
 ### Stable Còn Cần Gì
 
 - Typed IPC có allowlist thay cho privileged localhost APIs.
-- OS keychain để lưu provider credential và license token.
+- OS keychain để lưu provider credential và license token, thay cho local
+  encrypted vault của Preview.
 - Workspace write boundary do hệ điều hành cưỡng chế.
 - Tắt network mặc định cho command do model sinh ra.
 - Approval một lần cho hành động destructive, network, install và out-of-root.

@@ -57,8 +57,21 @@ type HealthPayload = {
   integrity?: { allowed?: boolean; mode?: string; reason?: string };
   security?: Record<string, unknown>;
   features?: string[];
+  providers?: ProviderStatus[];
   openai_key_present?: boolean;
   anthropic_key_present?: boolean;
+};
+
+type ProviderStatus = {
+  id?: string;
+  provider?: string;
+  name?: string;
+  enabled?: boolean;
+  ready?: boolean;
+  configured?: boolean;
+  source?: string;
+  readonly?: boolean;
+  updatedAt?: string | null;
 };
 
 type ModelPreset = {
@@ -118,6 +131,7 @@ export function App() {
   const [provider, setProvider] = useState("openai");
   const [model, setModel] = useState("gpt-4.1-mini");
   const [presets, setPresets] = useState<ModelPreset[]>([]);
+  const [providerKeys, setProviderKeys] = useState<Record<string, ProviderStatus>>({});
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("Ready");
@@ -136,6 +150,7 @@ export function App() {
         api<{ threads: ThreadSummary[] }>("/api/threads?limit=80")
       ]);
       setHealth(healthData);
+      setProviderKeys(providerStatusMap(healthData.providers || []));
       setPresets(presetData.presets || []);
       setThreads(threadData.threads || []);
       if (healthData.features?.length) setNotice(`${healthData.product || "Studio"} online`);
@@ -257,6 +272,27 @@ export function App() {
     await boot();
   }
 
+  async function saveProviderKey(providerId: "openai" | "anthropic") {
+    const value = window.prompt(`${providerId} API key`, "");
+    if (!value) return;
+    const status = await api<ProviderStatus>(`/api/secrets/${providerId}`, {
+      method: "POST",
+      body: JSON.stringify({ value, label: `${providerId} key` })
+    });
+    setProviderKeys((current) => ({ ...current, [providerId]: status }));
+    await boot();
+    setNotice(`${providerId} key saved`);
+  }
+
+  async function deleteProviderKey(providerId: "openai" | "anthropic") {
+    if (!window.confirm(`Delete saved ${providerId} key from this device?`)) return;
+    await api<{ ok: boolean }>(`/api/secrets/${providerId}`, { method: "DELETE", body: "{}" });
+    const status = await api<ProviderStatus>(`/api/secrets/${providerId}`);
+    setProviderKeys((current) => ({ ...current, [providerId]: status }));
+    await boot();
+    setNotice(`${providerId} key removed`);
+  }
+
   function applyPreset(id: string) {
     const preset = presets.find((entry) => entry.id === id);
     if (!preset) return;
@@ -365,6 +401,22 @@ export function App() {
         </section>
 
         <section>
+          <h2><KeyRound size={16} /> Provider Keys</h2>
+          <ProviderKeyRow
+            id="openai"
+            status={providerKeys.openai}
+            onSave={() => void saveProviderKey("openai")}
+            onDelete={() => void deleteProviderKey("openai")}
+          />
+          <ProviderKeyRow
+            id="anthropic"
+            status={providerKeys.anthropic}
+            onSave={() => void saveProviderKey("anthropic")}
+            onDelete={() => void deleteProviderKey("anthropic")}
+          />
+        </section>
+
+        <section>
           <h2><Wrench size={16} /> Tools</h2>
           <div className="tool-list">
             {tools.slice(0, 80).map((tool) => (
@@ -390,6 +442,30 @@ export function App() {
       </aside>
     </div>
   );
+}
+
+function ProviderKeyRow({ id, status, onSave, onDelete }: { id: "openai" | "anthropic"; status?: ProviderStatus; onSave: () => void; onDelete: () => void }) {
+  const ready = Boolean(status?.ready || status?.configured);
+  const readonly = Boolean(status?.readonly);
+  return (
+    <div className="key-row">
+      <div>
+        <strong>{id}</strong>
+        <span>{ready ? `${status?.source || "vault"}${readonly ? " / readonly" : ""}` : "not set"}</span>
+      </div>
+      <button title={`Save ${id} key`} onClick={onSave}><KeyRound size={14} /></button>
+      <button title={`Delete ${id} key`} disabled={!ready || readonly} onClick={onDelete}><Square size={14} /></button>
+    </div>
+  );
+}
+
+function providerStatusMap(providers: ProviderStatus[]) {
+  const map: Record<string, ProviderStatus> = {};
+  for (const provider of providers) {
+    const id = provider.id || provider.provider;
+    if (id) map[id] = provider;
+  }
+  return map;
 }
 
 function VirtualMessages({ items }: { items: ThreadItem[] }) {
