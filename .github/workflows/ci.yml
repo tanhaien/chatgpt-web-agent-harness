@@ -43,7 +43,13 @@ jobs:
           node --check test-pro.mjs
           node --check test-hardening.mjs
           node --check orchestration-runtime.mjs
+          node --check mcp-provider-runtime.mjs
+          node --check opencode-executor.mjs
           node --check test-orchestration.mjs
+          node --check test-mcp-provider-runtime.mjs
+          node --check test-mcp-gateway-server.mjs
+          node --check test-fixtures/mcp-provider-fixture.mjs
+          node --check test-opencode-executor.mjs
           node --check ../evals/run.mjs
           node --check ../scripts/local-coding-agent.mjs
           node --check ../scripts/network-doctor.mjs
@@ -76,6 +82,9 @@ jobs:
           $env:AGENT_MODE = "safe"
           $env:AGENT_POLICY = "full"
           $env:AGENT_EXTRA_ROOTS_JSON = "[]"
+          $env:LCA_MCP_GATEWAY = "0"
+          $env:LCA_ORCHESTRATION_EXECUTOR = "blocked"
+          $env:LCA_PERSIST_WORKSPACE_ENV = "0"
           $env:DASHBOARD_PORT = "0"
           $env:TEST_ENDPOINT = "http://127.0.0.1:$port/mcp"
           $out = Join-Path $PWD "ci-server.out.log"
@@ -102,6 +111,9 @@ jobs:
             npm run test:security
             npm run test:hardening
             npm run test:orchestration
+            npm run test:mcp-gateway-runtime
+            npm run test:mcp-gateway-server
+            npm run test:opencode-executor
             foreach ($package in @("contracts", "event-store", "supervisor", "omo-adapter", "task-stream", "controller", "mcp-gateway")) {
               npm test --prefix "../packages/$package"
             }
@@ -133,6 +145,9 @@ jobs:
           DASHBOARD_PORT: "0"
           AGENT_MODE: safe
           AGENT_POLICY: full
+          LCA_MCP_GATEWAY: "0"
+          LCA_ORCHESTRATION_EXECUTOR: blocked
+          LCA_PERSIST_WORKSPACE_ENV: "0"
         run: |
           WORKSPACE="$(mktemp -d)"
           AGENT_WORKSPACE="$WORKSPACE" node server.mjs > sec.log 2>&1 &
@@ -159,6 +174,10 @@ jobs:
         working-directory: packages/event-store
       - run: npm run eval
         working-directory: server
+        env:
+          LCA_MCP_GATEWAY: "0"
+          LCA_ORCHESTRATION_EXECUTOR: blocked
+          LCA_PERSIST_WORKSPACE_ENV: "0"
 
   studio-v5:
     name: Studio v5 security (${{ matrix.os }})

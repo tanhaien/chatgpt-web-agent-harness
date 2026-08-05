@@ -27,6 +27,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { createOrchestrationRuntime } from "./orchestration-runtime.mjs";
+import { createMcpProviderRuntime } from "./mcp-provider-runtime.mjs";
+import { createOpenCodeExecutor } from "./opencode-executor.mjs";
 
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
@@ -72,6 +74,7 @@ const ALLOW_DANGEROUS = process.env.AGENT_ALLOW_DANGEROUS === "1";
 // OpenAI Secure MCP Tunnel, whose channel is already private to your account.
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
 const APPROVAL_TOKEN = process.env.AGENT_APPROVAL_TOKEN || "";
+const PERSIST_WORKSPACE_ENV = String(process.env.LCA_PERSIST_WORKSPACE_ENV || "1") !== "0";
 const ALLOWED_ORIGINS = new Set(
   String(process.env.MCP_ALLOWED_ORIGINS || "")
     .split(",")
@@ -239,7 +242,8 @@ const SAFE_MODE_BLOCKS = [
 const processes = new Map(); // id -> { id, name, command, child, status, exitCode, startedAt, stdout, stderr }
 let approvalLock = Promise.resolve();
 let orchestrationRuntime = null;
-const ORCHESTRATION_EXECUTOR_MODE = "blocked-fallback";
+let mcpProviderRuntime = null;
+const ORCHESTRATION_EXECUTOR_SETTING = String(process.env.LCA_ORCHESTRATION_EXECUTOR || "opencode").trim().toLowerCase();
 const bootStartedAt = Date.now();
 
 // ----------------------------------------------------------------------------
@@ -254,6 +258,7 @@ let metrics = loadMetrics();
 await loadWorkspaceProfile();
 refreshSkipDirs();
 refreshSkillsDirs();
+await replaceMcpProviderRuntime();
 await replaceOrchestrationRuntime();
 
 // Detect ripgrep once at startup — the fastest search engine when present.
@@ -275,6 +280,7 @@ function detectRg() {
 
 function blockedFallbackExecutor() {
   return {
+    mode: "blocked-fallback",
     async execute() {
       return {
         status: "blocked",
@@ -289,14 +295,33 @@ function blockedFallbackExecutor() {
   };
 }
 
+function configuredOrchestrationExecutor() {
+  if (["blocked", "blocked-fallback", "off", "disabled"].includes(ORCHESTRATION_EXECUTOR_SETTING)) {
+    return blockedFallbackExecutor();
+  }
+  return createOpenCodeExecutor({ workspace: PRIMARY_ROOT });
+}
+
+async function replaceMcpProviderRuntime() {
+  const previous = mcpProviderRuntime;
+  mcpProviderRuntime = null;
+  if (previous) await previous.close();
+  if (String(process.env.LCA_MCP_GATEWAY || "1") === "0") return;
+  const runtime = createMcpProviderRuntime({ workspace: PRIMARY_ROOT });
+  mcpProviderRuntime = runtime;
+  const snapshot = await runtime.initialize();
+  log(`MCP gateway initialized providers=${snapshot.providerCount} tools=${snapshot.toolCount} toolAttention=${snapshot.toolAttention}`);
+}
+
 async function replaceOrchestrationRuntime() {
   const previous = orchestrationRuntime;
   orchestrationRuntime = null;
   if (previous) await previous.close();
+  const executor = configuredOrchestrationExecutor();
   orchestrationRuntime = createOrchestrationRuntime({
     dbPath: ORCHESTRATION_DB_PATH,
-    executor: blockedFallbackExecutor(),
-    executorMode: ORCHESTRATION_EXECUTOR_MODE,
+    executor,
+    executorMode: executor.mode || ORCHESTRATION_EXECUTOR_SETTING,
     workspaceId: WORKSPACE_ID,
     onRunError: (error, taskId) => log(`orchestration run failed task=${taskId}: ${error?.stack || error}`)
   });
@@ -306,15 +331,35 @@ function orchestrationHealth() {
   const snapshot = orchestrationRuntime?.snapshot();
   return {
     enabled: Boolean(snapshot?.enabled),
-    executor_mode: snapshot?.executorMode || ORCHESTRATION_EXECUTOR_MODE,
+    executor_mode: snapshot?.executorMode || ORCHESTRATION_EXECUTOR_SETTING,
     workspace_id: snapshot?.workspaceId || WORKSPACE_ID,
     in_flight_runs: snapshot?.inFlightRuns || 0
+  };
+}
+
+function mcpGatewayHealth() {
+  const snapshot = mcpProviderRuntime?.snapshot();
+  return snapshot || {
+    enabled: false,
+    initialized: false,
+    closed: false,
+    providerCount: 0,
+    toolCount: 0,
+    toolAttention: false,
+    unavailableProviders: []
   };
 }
 
 function requireOrchestrationRuntime() {
   if (!orchestrationRuntime) throw new Error("Orchestration runtime is unavailable");
   return orchestrationRuntime;
+}
+
+function requireMcpProviderRuntime() {
+  if (!mcpProviderRuntime) throw new Error("Multi-MCP gateway is disabled or unavailable");
+  const snapshot = mcpProviderRuntime.snapshot();
+  if (!snapshot.initialized) throw new Error("Multi-MCP gateway is still initializing");
+  return mcpProviderRuntime;
 }
 
 const httpServer = http.createServer(async (req, res) => {
@@ -350,7 +395,8 @@ const httpServer = http.createServer(async (req, res) => {
         workspace: PRIMARY_ROOT,
         dashboard_port: DASHBOARD_PORT,
         mcp_endpoint: `http://${HOST}:${PORT}/mcp`,
-        orchestration: orchestrationHealth()
+        orchestration: orchestrationHealth(),
+        mcp_gateway: mcpGatewayHealth()
       });
     }
     if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
@@ -529,9 +575,10 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
     for (const proc of processes.values()) killProcessTree(proc);
     httpServer.close();
     dashServer?.close();
-    Promise.resolve(orchestrationRuntime?.close())
-      .catch((error) => log(`orchestration close failed: ${error?.stack || error}`))
-      .finally(() => process.exit(0));
+    Promise.allSettled([
+      Promise.resolve(orchestrationRuntime?.close()),
+      Promise.resolve(mcpProviderRuntime?.close())
+    ]).finally(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();
   });
 }
@@ -599,7 +646,8 @@ const SERVER_INSTRUCTIONS = [
   "Keep the conversation light: do NOT re-read a file you already read; read only the line range you need; never dump a whole large file or large command output unless asked.",
   "When the conversation grows long or feels slow, call checkpoint() with a compact summary + next steps, then tell the user to open a NEW chat; in that fresh chat call resume() first. This resets the heavy context (faster) while keeping your progress.",
   "If a task matches an available skill, call list_skills first, then read_skill(name) to load its instructions before doing the work.",
-  "Durable orchestration control is available through delegate_task, task_status, task_events, and task_wait. The built-in executor is an explicit blocked fallback until an external executor transport is configured.",
+  "Durable orchestration is available through delegate_task, task_status, task_events, and task_wait. start=true runs a real loopback OpenCode HTTP executor by default; LCA_ORCHESTRATION_EXECUTOR=blocked enables the explicit emergency/CI fallback.",
+  "Specialist MCP providers are available behind gateway_list_providers, gateway_find_tools, gateway_call, and gateway_health. Use gateway_find_tools first: tool-attention ranks the internal MCP inventory without exposing every provider tool to the model.",
   "Prefer a few large, well-targeted calls over many tiny ones."
 ].join("\n");
 
@@ -622,6 +670,7 @@ function createMcpServer() {
   registerWebSearchTools(mcp);    // v2.9
   registerVerifyTools(mcp);       // v2.9
   registerSandboxTools(mcp);      // v2.9
+  registerMcpGatewayTools(mcp);
   registerOrchestrationTools(mcp);
   registerWorkspaceTools(mcp);    // v2.9
   return mcp;
@@ -788,6 +837,109 @@ function reg(mcp, name, def, handler) {
 }
 
 // ----------------------------------------------------------------------------
+// Multi-MCP gateway tools
+// ----------------------------------------------------------------------------
+function compactGatewayResult(result, maxChars = 120_000) {
+  const cloned = structuredClone(result);
+  const serialized = JSON.stringify(cloned);
+  if (serialized.length <= maxChars) return cloned;
+  return {
+    ok: cloned.ok,
+    providerId: cloned.providerId,
+    toolId: cloned.toolId,
+    startedAt: cloned.startedAt,
+    finishedAt: cloned.finishedAt,
+    durationMs: cloned.durationMs,
+    retryable: cloned.retryable,
+    truncated: true,
+    outputPreview: serialized.slice(0, maxChars)
+  };
+}
+
+function registerMcpGatewayTools(mcp) {
+  const riskSchema = z.enum(["read", "safe-write", "risky", "critical"]);
+
+  reg(
+    mcp,
+    "gateway_list_providers",
+    {
+      title: "List internal MCP providers",
+      description: "List the specialist MCP providers connected behind the Multi-MCP Gateway, with health, tool counts, and capabilities. This does not expose every tool schema.",
+      inputSchema: {}
+    },
+    async () => {
+      const runtime = requireMcpProviderRuntime();
+      return jsonResult({
+        ...runtime.snapshot(),
+        providers: runtime.listProviders()
+      });
+    }
+  );
+
+  reg(
+    mcp,
+    "gateway_find_tools",
+    {
+      title: "Find specialist MCP tools",
+      description: "Search the internal MCP inventory. tool-attention ranks matching tools when available; deterministic capability ranking is used as fallback. Call this before gateway_call.",
+      inputSchema: {
+        query: z.string().min(1).describe("Plain-language description of the capability or result you need."),
+        topK: z.number().int().min(1).max(20).default(8).describe("Maximum ranked tools to return."),
+        providerId: z.string().min(1).optional().describe("Optional provider filter, e.g. contextplus or tool-attention."),
+        maxRisk: riskSchema.default("read").describe("Highest downstream tool risk to include."),
+        requiredCapabilities: z.array(z.string().min(1)).optional().describe("Optional canonical capability filters.")
+      }
+    },
+    async ({ query, topK = 8, providerId, maxRisk = "read", requiredCapabilities }) => {
+      const runtime = requireMcpProviderRuntime();
+      return jsonResult(await runtime.findTools({ query, topK, providerId, maxRisk, requiredCapabilities }));
+    }
+  );
+
+  reg(
+    mcp,
+    "gateway_call",
+    {
+      title: "Call a specialist MCP tool",
+      description: "Invoke one canonical tool returned by gateway_find_tools through the gateway's timeout, concurrency, health, circuit-breaker, and policy controls.",
+      inputSchema: {
+        toolId: z.string().min(1).describe("Canonical tool ID, e.g. contextplus/get_blast_radius."),
+        input: z.record(z.string(), z.unknown()).optional().describe("Arguments matching the selected tool's inputSchema."),
+        timeoutMs: z.number().int().min(1).max(300000).optional(),
+        idempotencyKey: z.string().min(1).optional()
+      }
+    },
+    async ({ toolId, input = {}, timeoutMs, idempotencyKey }) => {
+      const runtime = requireMcpProviderRuntime();
+      const result = await runtime.invoke({
+        toolId,
+        input,
+        timeoutMs,
+        idempotencyKey,
+        context: { metadata: { caller: "lca-mcp-gateway" } }
+      });
+      return jsonResult(compactGatewayResult(result));
+    }
+  );
+
+  reg(
+    mcp,
+    "gateway_health",
+    {
+      title: "Multi-MCP gateway health",
+      description: "Return gateway/provider health, circuit state, queue depth, counters, and unavailable-provider errors.",
+      inputSchema: {
+        providerId: z.string().min(1).optional()
+      }
+    },
+    async ({ providerId }) => {
+      const runtime = requireMcpProviderRuntime();
+      return jsonResult(providerId ? runtime.health(providerId) : runtime.health());
+    }
+  );
+}
+
+// ----------------------------------------------------------------------------
 // Durable orchestration tools
 // ----------------------------------------------------------------------------
 function registerOrchestrationTools(mcp) {
@@ -821,7 +973,7 @@ function registerOrchestrationTools(mcp) {
       const runtime = requireOrchestrationRuntime();
       const ref = runtime.delegate(request);
       if (start) runtime.start(ref.taskId);
-      return jsonResult({ ...ref, started: start, executorMode: ORCHESTRATION_EXECUTOR_MODE });
+      return jsonResult({ ...ref, started: start, executorMode: runtime.snapshot().executorMode });
     }
   );
 
@@ -5041,6 +5193,12 @@ const STRICT_MUTATION_TOOLS = new Set([
 ]);
 
 function approvalActionForTool(tool, args) {
+  if (tool === "gateway_call") {
+    const canonical = mcpProviderRuntime?.getTool(String(args.toolId || ""));
+    return canonical && ["risky", "critical"].includes(canonical.risk)
+      ? `gateway_call:${canonical.id}`
+      : null;
+  }
   if (tool === "delete_path") return `delete_path:${String(args.path || "")}`;
   if (tool === "delete_skill") return `delete_skill:${String(args.name || "")}`;
   if (tool === "run_command" || tool === "proc_start") {
@@ -5120,6 +5278,12 @@ async function dashApiApprovalAction(url, res) {
 
 async function enforceToolPolicy(tool, args) {
   if (["policy_status", "explain_risk", "request_approval", "request_approval_batch", "approve_request", "deny_request"].includes(tool)) return;
+  if (tool === "gateway_call") {
+    const canonical = mcpProviderRuntime?.getTool(String(args.toolId || ""));
+    if (canonical && AGENT_POLICY === "strict" && canonical.risk !== "read") {
+      throw new Error(`Gateway tool "${canonical.id}" has risk=${canonical.risk} and is blocked by policy=strict.`);
+    }
+  }
   if (AGENT_POLICY === "full") return;
   if (AGENT_POLICY === "strict" && STRICT_MUTATION_TOOLS.has(tool)) {
     throw new Error(`Tool "${tool}" is blocked by policy=strict.`);
@@ -5798,14 +5962,17 @@ function registerWorkspaceTools(mcp) {
       await loadWorkspaceProfile();
       refreshSkipDirs();
       refreshSkillsDirs();
+      await replaceMcpProviderRuntime();
       await replaceOrchestrationRuntime();
-      try {
-        const envPath = path.resolve(APP_DIR, ".env");
-        const envContent = readFileSync(envPath, "utf-8");
-        const updated = envContent.replace(/^AGENT_WORKSPACE=.*/m, `AGENT_WORKSPACE=${resolved}`);
-        writeFileSync(envPath, updated);
-      } catch (e) {
-        log(`set_workspace: .env update skipped (${e.message})`);
+      if (PERSIST_WORKSPACE_ENV) {
+        try {
+          const envPath = path.resolve(APP_DIR, ".env");
+          const envContent = readFileSync(envPath, "utf-8");
+          const updated = envContent.replace(/^AGENT_WORKSPACE=.*/m, `AGENT_WORKSPACE=${resolved}`);
+          writeFileSync(envPath, updated);
+        } catch (e) {
+          log(`set_workspace: .env update skipped (${e.message})`);
+        }
       }
       try { mcp.server.sendNotification("notifications/roots/listChanged", {}); } catch (e) {}
       log(`workspace switched to: ${resolved}`);

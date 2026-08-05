@@ -58,6 +58,9 @@ async function startServer(workspace) {
       AGENT_EXTRA_ROOTS_JSON: "[]",
       AGENT_MODE: "safe",
       AGENT_POLICY: "full",
+      LCA_MCP_GATEWAY: "0",
+      LCA_ORCHESTRATION_EXECUTOR: "blocked",
+      LCA_PERSIST_WORKSPACE_ENV: "0",
       MCP_AUTH_TOKEN: "",
       AGENT_APPROVAL_TOKEN: ""
     },

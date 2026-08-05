@@ -61,7 +61,10 @@ async function startServer(workspace) {
           DASHBOARD_PORT: "0",
           AGENT_WORKSPACE: workspace,
           AGENT_MODE: "safe",
-          AGENT_POLICY: "full"
+          AGENT_POLICY: "full",
+          LCA_MCP_GATEWAY: "0",
+          LCA_ORCHESTRATION_EXECUTOR: "blocked",
+          LCA_PERSIST_WORKSPACE_ENV: "0"
         },
         windowsHide: true
       }

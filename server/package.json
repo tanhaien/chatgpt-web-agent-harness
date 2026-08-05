@@ -17,6 +17,9 @@
     "test:security:baseline": "node security-test.mjs",
     "test:hardening": "node test-hardening.mjs",
     "test:orchestration": "node test-orchestration.mjs",
+    "test:mcp-gateway-runtime": "node test-mcp-provider-runtime.mjs",
+    "test:mcp-gateway-server": "node test-mcp-gateway-server.mjs",
+    "test:opencode-executor": "node test-opencode-executor.mjs",
     "test:pro": "node test-pro.mjs",
     "eval": "node ../evals/run.mjs"
   },

@@ -34,6 +34,8 @@
 
 #### Prerequisites
 - Node.js ≥ 20
+- OpenCode CLI with a configured model/provider (required for `delegate_task` with `start: true`)
+- OpenCode MCP configuration (required for the specialist Multi-MCP Gateway)
 - Docker (optional, for `sandbox_exec`)
 - Tailscale (optional, for private remote MCP/dashboard access)
 - A ChatGPT Plus subscription ($20/mo — free GPT-5.5 with Codex Web)
@@ -123,6 +125,8 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 | MCP routing | ❌ | ✅ Native stdio MCP |
 | Dynamic workspace switch | ❌ | ✅ `set_workspace` (this fork) |
 | Durable task control plane | ❌ | ✅ SQLite events, status, wait and SSE |
+| Real autonomous executor | ❌ | ✅ Loopback OpenCode HTTP sidecar |
+| Multi-MCP routing | ❌ | ✅ Specialist providers ranked by tool-attention |
 
 ---
 
@@ -133,7 +137,8 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 - **AGENTS.md** — structured agent workflow playbook
 - **verify_done** — formal evidence gate for task completion
 - **Durable orchestration** — workspace-scoped SQLite event store, supervisor, task status/wait APIs and dashboard SSE
-- **Multi-MCP foundation** — canonical contracts, OMO adapter, closed-loop controller and provider gateway packages
+- **Multi-MCP Gateway** — connects specialist MCPs behind four stable tools; `tool-attention` ranks the private tool inventory
+- **Real OpenCode executor** — `delegate_task` with `start: true` launches a loopback OpenCode HTTP sidecar and persists tool-call lifecycle events
 
 ---
 
@@ -148,6 +153,10 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 | `task_status` | Read the projected current task status |
 | `task_events` | Page or long-poll ordered lifecycle events |
 | `task_wait` | Wait for terminal status or timeout |
+| `gateway_list_providers` | List connected specialist MCP providers and health |
+| `gateway_find_tools` | Rank the private MCP tool inventory with `tool-attention` |
+| `gateway_call` | Invoke one specialist tool through policy/timeout/circuit controls |
+| `gateway_health` | Inspect provider health, queues, counters, and circuit state |
 
 #### Built-in (from LCA core)
 | Tool | Description |
@@ -191,7 +200,34 @@ Use the returned `taskId` with:
 
 Task history survives server restarts and is isolated per workspace. Reusing the same `idempotencyKey` returns the original task without duplicating lifecycle events.
 
-> **Executor status:** the bundled runtime currently uses the honest `blocked-fallback` executor. `start: false` leaves a task queued; `start: true` records a terminal `blocked` result until a real OMO/OpenCode executor transport is configured. The durable control plane and integration boundary are complete; autonomous code execution is intentionally not faked.
+> **Executor status:** `start: false` leaves a durable task queued. `start: true` runs a real loopback OpenCode HTTP sidecar, maps the requested role to an OpenCode agent (`executor` → `build`, `planner` → `plan`), captures tool-call events, reads the final diff, and persists `completed`, `blocked`, or `failed`. Set `LCA_ORCHESTRATION_EXECUTOR=blocked` only for CI, emergency fallback, or machines without OpenCode.
+
+### Multi-MCP Gateway
+
+The server does **not** expose all specialist tools directly to ChatGPT. It keeps the inventory private and exposes four stable gateway tools:
+
+```text
+ChatGPT
+   │
+   ├─ gateway_find_tools ──► tool-attention ranks the private tool inventory
+   │
+   └─ gateway_call ────────► timeout / FIFO / health / circuit / policy
+                                   │
+             ┌─────────────────────┼────────────────────────┐
+             ▼                     ▼                        ▼
+         contextplus       code-review-graph          codebase-memory
+         mempalace         lightpanda                 tool-attention
+         vibe-trading      vn-data
+```
+
+The default allowlist is:
+
+```text
+contextplus,code-review-graph,lightpanda,mempalace,tool-attention,
+vibe-trading,vn-data,codebase-memory-mcp
+```
+
+`gateway_find_tools` defaults to `maxRisk: "read"`. Under `policy=strict`, only read tools can run. Under `policy=balanced`, `risky` and `critical` gateway calls require an exact one-time approval such as `gateway_call:lightpanda/click`.
 
 ### Private access with Tailscale
 
@@ -272,6 +308,9 @@ node --watch server/server.mjs
 npm --prefix server run test:agent
 npm --prefix server run test:hardening
 npm --prefix server run test:orchestration
+npm --prefix server run test:mcp-gateway-runtime
+npm --prefix server run test:mcp-gateway-server
+npm --prefix server run test:opencode-executor
 
 # Run package suites
 for p in contracts event-store supervisor omo-adapter task-stream controller mcp-gateway; do
@@ -288,6 +327,8 @@ cd tray-app && dotnet publish -c Release
 ├── server/                    # MCP server, dashboard and runtime composition
 │   ├── server.mjs             # Main entry point
 │   ├── orchestration-runtime.mjs
+│   ├── opencode-executor.mjs
+│   ├── mcp-provider-runtime.mjs
 │   └── data/                  # Metrics, audit logs and workspace DBs
 ├── packages/                  # Contracts, event store, supervisor, streams,
 │                              # OMO adapter, controller and Multi-MCP gateway
@@ -352,6 +393,9 @@ ChatGPT Web (Codex Web)  ← OpenAI Tunnel
 | `delegate_task` | Tạo task bền vững trong SQLite theo workspace |
 | `task_status` / `task_events` / `task_wait` | Xem trạng thái, event và chờ terminal |
 | Dashboard SSE | Theo dõi lifecycle task theo thời gian thực |
+| `gateway_find_tools` | Nhờ `tool-attention` chọn đúng MCP chuyên dụng |
+| `gateway_call` | Gọi MCP qua timeout, queue, policy và circuit breaker |
+| OpenCode executor | `start: true` chạy agent thật và ghi lại tool events |
 | AGENTS.md | Playbook cho AI agent — workflow chuẩn |
 | `verify_done` | Evidence gate |
 
@@ -373,7 +417,20 @@ Tạo task bằng `delegate_task`:
 
 Sau đó dùng `task_status`, `task_events` hoặc `task_wait` với `taskId` trả về. Task được lưu qua restart và tách biệt khi đổi workspace bằng `set_workspace`.
 
-Hiện executor mặc định là `blocked-fallback`: `start: false` giữ task ở `queued`; `start: true` kết thúc ở `blocked` cho đến khi cấu hình transport OMO/OpenCode thật. Control plane không giả vờ đã chạy agent.
+Executor mặc định hiện là `opencode-http`: `start: false` giữ task ở `queued`; `start: true` khởi chạy OpenCode sidecar trên loopback, dùng model cấu hình, thực thi task, lấy diff và ghi đầy đủ event. Chỉ đặt `LCA_ORCHESTRATION_EXECUTOR=blocked` cho CI, chế độ khẩn cấp hoặc máy chưa cài OpenCode.
+
+### Dùng Multi-MCP Gateway
+
+Luồng khuyến nghị:
+
+```text
+1. gateway_list_providers  → xem các MCP đang kết nối
+2. gateway_find_tools      → mô tả nhu cầu; tool-attention xếp hạng tool
+3. gateway_call            → gọi canonical tool ID đã chọn
+4. gateway_health          → xem health/circuit/counters khi có lỗi
+```
+
+Các MCP mặc định gồm `contextplus`, `code-review-graph`, `codebase-memory-mcp`, `mempalace`, `lightpanda`, `tool-attention`, `vibe-trading` và `vn-data`. ChatGPT không phải nhận toàn bộ schema của hơn 100 tool cùng lúc; chỉ kết quả tìm kiếm phù hợp được trả về.
 
 ### Mở riêng qua Tailscale
 

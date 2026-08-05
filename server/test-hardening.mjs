@@ -10,6 +10,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const SERVER = path.resolve("server.mjs");
+const ENV_PATH = path.resolve(".env");
+const envBefore = await readFile(ENV_PATH, "utf8").catch(() => null);
 let pass = 0;
 let fail = 0;
 
@@ -48,6 +50,9 @@ async function startServer(workspace, { port, dashboardPort = 0, policy = "stric
       AGENT_EXTRA_ROOTS_JSON: "[]",
       MCP_AUTH_TOKEN: auth,
       AGENT_APPROVAL_TOKEN: approvalToken,
+      LCA_MCP_GATEWAY: "0",
+      LCA_ORCHESTRATION_EXECUTOR: "blocked",
+      LCA_PERSIST_WORKSPACE_ENV: "0",
       DASHBOARD_ALLOWED_ORIGINS: dashboardAllowedOrigins,
       AGENT_MAX_BODY_BYTES: maxBody
     },
@@ -281,6 +286,8 @@ try {
   const other = await connect(19005);
   check("new workspace cannot undo another workspace history", (await call(other, "undo_last_patch")).isError);
   await other.close();
+  const envAfter = await readFile(ENV_PATH, "utf8").catch(() => null);
+  check("test workspace switches do not overwrite server .env", envAfter === envBefore);
 } finally {
   if (server) await stopServer(server);
   await rm(base, { recursive: true, force: true });

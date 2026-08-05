@@ -20,12 +20,20 @@ follows [Semantic Versioning](https://semver.org/).
 
 - Durable workspace-scoped orchestration with canonical contracts, SQLite event
   storage, delegation supervision, task read/wait APIs, SSE streaming, an
-  OMO/OpenCode event adapter, a local closed-loop controller, and a Multi-MCP
-  provider gateway foundation.
+  OMO/OpenCode event adapter, a local closed-loop controller, and a production
+  Multi-MCP provider gateway.
 - MCP tools `delegate_task`, `task_status`, `task_events`, and `task_wait`, plus
   local dashboard task-event streaming and persistence across server restarts.
 - Configurable `DASHBOARD_ALLOWED_ORIGINS` for private dashboard access through
   reverse proxies such as Tailscale Serve.
+- A real loopback OpenCode HTTP executor for `delegate_task(start=true)`, with
+  abort/timeout handling, diff capture, machine-readable results, and canonical
+  agent/step/tool-call lifecycle events.
+- Multi-MCP server tools `gateway_list_providers`, `gateway_find_tools`,
+  `gateway_call`, and `gateway_health`. The gateway connects configured local
+  providers, uses `tool-attention` for ranking, and enforces timeout,
+  concurrency, health, circuit-breaker, and policy boundaries without exposing
+  the full private tool inventory to the model.
 
 - Installation and CI coverage for the SQLite event-store dependency and all
   orchestration package suites.

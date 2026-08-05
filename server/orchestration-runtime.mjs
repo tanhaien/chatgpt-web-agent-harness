@@ -127,6 +127,7 @@ export function createOrchestrationRuntime(options) {
     closed = true;
     closing = (async () => {
       await Promise.allSettled([...inFlight.values()]);
+      await Promise.resolve(options.executor.close?.()).catch(() => {});
       eventStore.close();
     })();
     return closing;
