@@ -22,7 +22,9 @@
 
 # 🤖 ChatGPT Web Agent Harness
 
-> **Fullstack MCP harness for ChatGPT Web (Codex Web) — turn ChatGPT's GPT-5.5 into a full-stack local coding agent with Docker sandboxed execution, web search, review gates, and verification.**
+**Current release: `v4.5.0-pro`**
+
+> **Fullstack MCP harness for ChatGPT Web (Codex Web) — connect ChatGPT to a full-stack local coding agent with Docker-sandboxed execution, durable orchestration, specialist MCP routing, review gates, and verification.**
 >
 > Fork of [LongNgn204/local-coding-agent](https://github.com/LongNgn204/local-coding-agent) with `sandbox_exec` for Docker-isolated code execution and dynamic workspace switching.
 
@@ -38,7 +40,7 @@
 - OpenCode MCP configuration (required for the specialist Multi-MCP Gateway)
 - Docker (optional, for `sandbox_exec`)
 - Tailscale (optional, for private remote MCP/dashboard access)
-- A ChatGPT Plus subscription ($20/mo — free GPT-5.5 with Codex Web)
+- A ChatGPT account/client with MCP connector support
 
 #### Setup (5 minutes)
 
@@ -81,8 +83,8 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                 ChatGPT Web (Codex Web)                  │
-│              GPT-5.5 inference — FREE in $20/mo          │
-│           Plans → Codes → Reviews → Verifies             │
+│          Plans → routes tools → codes → verifies          │
+│       Four stable gateway tools hide private inventory    │
 └────────────────────────┬────────────────────────────────┘
                          │ OpenAI Secure MCP Tunnel
                          ▼

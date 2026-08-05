@@ -16,6 +16,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [4.5.0-pro] - 2026-08-05
+
 ### Added
 
 - Durable workspace-scoped orchestration with canonical contracts, SQLite event
@@ -87,6 +89,38 @@ follows [Semantic Versioning](https://semver.org/).
   enforce HTTPS, exact signed size, SHA-256, target OS/arch, and minimum app
   version, remove partial files on failure, and deliberately refuse automatic
   execution until installer signing is complete.
+
+### Changed
+
+- Server, npm package, tray metadata, Pro version assertions, and release docs
+  now report `4.5.0-pro`.
+- The default durable-task executor is now the real loopback OpenCode HTTP
+  transport; `blocked-fallback` remains available explicitly for CI and
+  emergency operation.
+- README architecture, setup requirements, tool references, production flow,
+  English/Vietnamese usage, and server-local documentation now describe the
+  current Multi-MCP and OpenCode runtime rather than the earlier foundation.
+
+### Fixed / Hardened
+
+- Tool risk classification avoids read-tool false positives such as
+  `read_record`, while gateway calls still enforce strict/balanced policy and
+  exact one-time approvals.
+- OpenCode execution redacts secret-like event fields, caps captured payloads,
+  enforces `maxToolCalls`, aborts failed sessions, and closes its sidecar during
+  runtime shutdown.
+- Ephemeral integration tests can disable `set_workspace` persistence so a
+  temporary test workspace cannot overwrite the operator's `server/.env`.
+
+### Verification
+
+- Server agent, Pro, security, hardening, orchestration, gateway-runtime,
+  gateway-policy, and OpenCode-executor suites pass.
+- Eval suite passes 20/20 and all seven orchestration package suites pass.
+- A real delegated task completed through OpenCode and persisted canonical
+  agent, step, and tool-call events.
+- Production smoke verified eight connected MCP providers, 136 private tools,
+  and `tool-attention` ranking through the Tailscale MCP endpoint.
 
 ## [4.4.0-pro] - 2026-07-01
 
@@ -337,6 +371,7 @@ Windows tray workflow.
 - Dashboard port `8788` remains reserved by the tunnel client; use the default
   dashboard port `8790`.
 
+[4.5.0-pro]: https://github.com/tanhaien/chatgpt-web-agent-harness/releases/tag/v4.5.0-pro
 [4.4.0-pro]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.4.0-pro
 [4.3.0-pro]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.3.0-pro
 [4.2.0-pro]: https://github.com/LongNgn204/local-coding-agent/releases/tag/v4.2.0-pro

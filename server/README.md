@@ -1,10 +1,14 @@
 # Local Coding Agent — MCP server
 
+**Current release: `v4.5.0-pro`**
+
 A local MCP server that ChatGPT Web (or any MCP client) connects to as a tool.
 It lets the model act like a coding agent on **your own machine** — read/write
 files, run commands, manage background processes, and use git — confined to
-folders you configure. It does **not** use an API key and does **not** automate
-ChatGPT sessions; it is a normal MCP connector you authorize.
+folders you configure. The core MCP server does **not** require a model API key
+and does **not** automate ChatGPT sessions; it is a normal MCP connector you
+authorize. Delegated execution uses the provider credentials already configured
+in OpenCode.
 
 > Full documentation, security model, and setup: see the [repository README](../README.md).
 
@@ -19,6 +23,8 @@ ChatGPT sessions; it is a normal MCP connector you authorize.
 | Processes | `proc_start`, `proc_list`, `proc_output`, `proc_stop` |
 | Git | `git` |
 | Pro | `workspace_snapshot`, `workspace_doctor`, `quality_gate`, `session_report` |
+| Orchestration | `delegate_task`, `task_status`, `task_events`, `task_wait` |
+| Multi-MCP gateway | `gateway_list_providers`, `gateway_find_tools`, `gateway_call`, `gateway_health` |
 | Notes & session | `save_note`, `list_notes`, `checkpoint`, `resume` |
 
 ## Run
@@ -54,6 +60,11 @@ npm start
 | `AGENT_APPROVAL_TTL_MINUTES` | `10` | Exact approval expiry, clamped to 1-30 minutes. |
 | `AGENT_MAX_BATCH_READ_CHARS` | `500000` | Combined text cap for one `read_many` response. |
 | `DASHBOARD_PORT` | `8790` | Local-only metrics dashboard. `0` disables it. (Avoid 8788 — the OpenAI tunnel uses it.) |
+| `LCA_ORCHESTRATION_EXECUTOR` | `opencode` | Real OpenCode HTTP executor. Set `blocked` only for CI/emergency fallback. |
+| `LCA_OPENCODE_MODEL` | `opencode-go/deepseek-v4-pro` | OpenCode provider/model pair used for delegated tasks. |
+| `LCA_MCP_GATEWAY` | `1` | Enables the specialist Multi-MCP Gateway. Set `0` to disable it. |
+| `LCA_MCP_PROVIDER_ALLOWLIST` | built-in eight-provider list | Comma-separated configured MCP providers exposed through the gateway. |
+| `LCA_PERSIST_WORKSPACE_ENV` | `1` | Set `0` in ephemeral tests so `set_workspace` does not rewrite `server/.env`. |
 | `AGENT_READ_DEFAULT` | `30000` | Default chars `read_file` returns (raise per-call via `max_chars`). Keeps payloads + context small. |
 | `AGENT_CMD_OUTPUT_DEFAULT` | `20000` | Default chars of command output returned (use `tail_lines`/`head_lines`/`max_output_chars`). |
 
@@ -62,6 +73,10 @@ npm start
 ```bash
 npm run test:agent       # exercises every tool against a running server
 npm run test:security    # runtime security checks against a running server
-npm run test:hardening   # self-contained policy/origin/body/undo regressions
-npm run test:pro         # Pro snapshot/health/tier regression checks
+npm run test:hardening            # self-contained policy/origin/body/undo regressions
+npm run test:pro                  # Pro snapshot/health/tier regression checks
+npm run test:orchestration        # durable task lifecycle + persistence
+npm run test:mcp-gateway-runtime  # provider discovery/ranking/invocation
+npm run test:mcp-gateway-server   # server policy + one-time approvals
+npm run test:opencode-executor    # sidecar, events, diff, limits, redaction
 ```
