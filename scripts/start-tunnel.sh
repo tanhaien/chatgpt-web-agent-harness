@@ -83,6 +83,10 @@ CONFIG_ID="$(
 
 # First-run install.
 [ -d "$SERVER_DIR/node_modules" ] || { echo "Installing server dependencies..."; (cd "$SERVER_DIR" && npm install); }
+[ -d "$REPO_ROOT/packages/event-store/node_modules" ] || {
+  echo "Installing durable orchestration dependencies..."
+  (cd "$REPO_ROOT/packages/event-store" && npm install)
+}
 
 # Restart only the server behind this health endpoint when startup config changed.
 cur_ws="$(get_field workspace)"

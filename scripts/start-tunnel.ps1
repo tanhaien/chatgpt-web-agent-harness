@@ -91,10 +91,15 @@ $configMaterial = [ordered]@{
 } | ConvertTo-Json -Compress
 $AgentConfigId = $configMaterial | node -e "const c=require('crypto');let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(c.createHash('sha256').update(s).digest('hex').slice(0,16)))"
 
-# Install server deps on first run.
+# Install server and durable orchestration deps on first run.
 if (-not (Test-Path -LiteralPath (Join-Path $ServerDir "node_modules"))) {
     Write-Host "Installing server dependencies..."
     Push-Location $ServerDir; npm install; Pop-Location
+}
+$EventStoreDir = Join-Path $RepoRoot "packages/event-store"
+if (-not (Test-Path -LiteralPath (Join-Path $EventStoreDir "node_modules"))) {
+    Write-Host "Installing durable orchestration dependencies..."
+    Push-Location $EventStoreDir; npm install; Pop-Location
 }
 
 # Restart only the server behind this health endpoint when startup config changed.

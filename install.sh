@@ -18,6 +18,9 @@ echo "node $(node -v)"
 echo "Installing server dependencies..."
 ( cd "$ROOT/server" && npm install --no-fund --no-audit )
 
+echo "Installing durable orchestration dependencies..."
+( cd "$ROOT/packages/event-store" && npm install --no-fund --no-audit )
+
 mkdir -p "$ROOT/tools"
 chmod +x "$ROOT/scripts/start-tunnel.sh" 2>/dev/null || true
 

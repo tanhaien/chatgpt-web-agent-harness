@@ -33,8 +33,9 @@
 ### Quick Start
 
 #### Prerequisites
-- Node.js ≥ 18
-- Docker (optional, for sandbox_exec)
+- Node.js ≥ 20
+- Docker (optional, for `sandbox_exec`)
+- Tailscale (optional, for private remote MCP/dashboard access)
 - A ChatGPT Plus subscription ($20/mo — free GPT-5.5 with Codex Web)
 
 #### Setup (5 minutes)
@@ -44,12 +45,12 @@
 git clone https://github.com/tanhaien/chatgpt-web-agent-harness.git
 cd chatgpt-web-agent-harness
 
-# 2. Install
-npm install
+# 2. Install server + durable SQLite orchestration dependencies
+bash install.sh
 
 # 3. Configure
-cp server/.env.example server/.env
-# Edit .env: set your OPENAI_API_KEY (for Secure Tunnel)
+cp .env.example server/.env
+# Edit server/.env: set AGENT_WORKSPACE and optional auth/origin settings
 
 # 4. Start the tunnel
 bash scripts/start-tunnel.sh
@@ -63,10 +64,10 @@ bash scripts/start-tunnel.sh
 
 ```bash
 # MCP server health (port 8787)
-curl http://localhost:8787/health
+curl http://localhost:8787/healthz
 
 # Dashboard (port 8790)
-curl http://localhost:8790/
+open http://localhost:8790/ui  # or browse to it manually
 ```
 
 In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
@@ -98,6 +99,10 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 │  · git_status/diff— git operations                       │
 │  · sandbox_exec   — Docker-isolated code execution      │
 │  · set_workspace  — switch repo without restart          │
+│  · delegate_task  — persist a durable delegated task     │
+│  · task_status    — project current durable status       │
+│  · task_events    — cursor/long-poll lifecycle events    │
+│  · task_wait      — wait for terminal task state         │
 │  · verify_done    — evidence gate                        │
 │  · quality_gate   — lint/test/build gate                │
 │  · workspace_*    — snapshot, doctor, info              │
@@ -117,6 +122,7 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 | Code review gate | ❌ | ✅ `verify_done` evidence gate |
 | MCP routing | ❌ | ✅ Native stdio MCP |
 | Dynamic workspace switch | ❌ | ✅ `set_workspace` (this fork) |
+| Durable task control plane | ❌ | ✅ SQLite events, status, wait and SSE |
 
 ---
 
@@ -126,6 +132,8 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 - **set_workspace** — switch repo at runtime, no restart needed
 - **AGENTS.md** — structured agent workflow playbook
 - **verify_done** — formal evidence gate for task completion
+- **Durable orchestration** — workspace-scoped SQLite event store, supervisor, task status/wait APIs and dashboard SSE
+- **Multi-MCP foundation** — canonical contracts, OMO adapter, closed-loop controller and provider gateway packages
 
 ---
 
@@ -136,6 +144,10 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 |---|---|
 | `sandbox_exec` | Run code in Docker container — isolated, repeatable |
 | `set_workspace` | Switch workspace repo dynamically |
+| `delegate_task` | Persist a durable task; queue-only unless `start: true` |
+| `task_status` | Read the projected current task status |
+| `task_events` | Page or long-poll ordered lifecycle events |
+| `task_wait` | Wait for terminal status or timeout |
 
 #### Built-in (from LCA core)
 | Tool | Description |
@@ -150,6 +162,58 @@ In ChatGPT Codex, call `ping` or `workspace_info` to confirm the connection.
 | `quality_gate` | Lint/test/build gate |
 | `workspace_info` / `workspace_snapshot` / `workspace_doctor` | Workspace introspection |
 | `list_skills` / `policy_status` | MCP metadata |
+
+---
+
+### Durable orchestration
+
+The server exposes four MCP tools backed by a workspace-scoped SQLite event store:
+
+```json
+// delegate_task
+{
+  "goal": "Review authentication and run the related tests",
+  "role": "executor",
+  "acceptanceCriteria": ["Find the cause", "Relevant tests pass"],
+  "risk": "safe-write",
+  "maxToolCalls": 30,
+  "timeoutMs": 600000,
+  "idempotencyKey": "auth-review-001"
+}
+```
+
+Use the returned `taskId` with:
+
+- `task_status` — current projected state.
+- `task_events` — ordered cursor pagination (`afterSequence`, `limit`) or long polling (`waitMs`).
+- `task_wait` — wait for `completed`, `blocked`, `failed`, or `cancelled`.
+- Dashboard SSE — `GET /api/task-events?taskId=...&afterSequence=-1&limit=100&heartbeatMs=15000`.
+
+Task history survives server restarts and is isolated per workspace. Reusing the same `idempotencyKey` returns the original task without duplicating lifecycle events.
+
+> **Executor status:** the bundled runtime currently uses the honest `blocked-fallback` executor. `start: false` leaves a task queued; `start: true` records a terminal `blocked` result until a real OMO/OpenCode executor transport is configured. The durable control plane and integration boundary are complete; autonomous code execution is intentionally not faked.
+
+### Private access with Tailscale
+
+Keep both Node servers on loopback and proxy them inside your tailnet:
+
+```bash
+# MCP
+sudo tailscale serve --bg --https=8443 http://127.0.0.1:8787
+
+# Dashboard
+# Also set DASHBOARD_ALLOWED_ORIGINS=https://YOUR-NODE.YOUR-TAILNET.ts.net:8444
+sudo tailscale serve --bg --https=8444 http://127.0.0.1:8790
+```
+
+Then use:
+
+```text
+https://YOUR-NODE.YOUR-TAILNET.ts.net:8443/mcp
+https://YOUR-NODE.YOUR-TAILNET.ts.net:8444/ui
+```
+
+Set `MCP_AUTH_TOKEN` when more than one trusted user/device can reach the node. Do not bind the MCP server to `0.0.0.0` unless you also enforce a firewall and bearer authentication.
 
 ---
 
@@ -197,27 +261,37 @@ To use: the agent reads `AGENTS.md` at workspace start.
 ### Development
 
 ```bash
+# Install dependencies
+npm ci --prefix server
+npm ci --prefix packages/event-store
+
 # Start dev server with auto-reload
 node --watch server/server.mjs
 
-# Run agent test suite
-npm run test:agent
+# Run server suites
+npm --prefix server run test:agent
+npm --prefix server run test:hardening
+npm --prefix server run test:orchestration
 
-# Run security tests
-npm run test:security
+# Run package suites
+for p in contracts event-store supervisor omo-adapter task-stream controller mcp-gateway; do
+  npm test --prefix "packages/$p"
+done
 
 # Build Windows tray app
-npm run build:tray
+cd tray-app && dotnet publish -c Release
 ```
 
 #### Project Structure
 
 ```
-├── server/           # MCP server (Node.js, Zod)
-│   ├── server.mjs    # Main entry point
-│   ├── tools/        # Tool implementations
-│   └── data/         # Metrics, audit logs
-├── scripts/          # Tunnel client, setup scripts
+├── server/                    # MCP server, dashboard and runtime composition
+│   ├── server.mjs             # Main entry point
+│   ├── orchestration-runtime.mjs
+│   └── data/                  # Metrics, audit logs and workspace DBs
+├── packages/                  # Contracts, event store, supervisor, streams,
+│                              # OMO adapter, controller and Multi-MCP gateway
+├── scripts/                   # Tunnel client, setup scripts
 ├── docs/             # Documentation, banner SVG
 ├── AGENTS.md         # AI agent playbook
 └── LICENSE           # AGPL-3.0
@@ -240,12 +314,12 @@ AGPL-3.0 — see [LICENSE](LICENSE).
 git clone https://github.com/tanhaien/chatgpt-web-agent-harness.git
 cd chatgpt-web-agent-harness
 
-# 2. Cài đặt
-npm install
+# 2. Cài server và dependency SQLite orchestration
+bash install.sh
 
 # 3. Cấu hình
-cp server/.env.example server/.env
-# Sửa .env: điền OPENAI_API_KEY
+cp .env.example server/.env
+# Sửa server/.env: đặt AGENT_WORKSPACE và auth/origin nếu cần
 
 # 4. Chạy tunnel
 bash scripts/start-tunnel.sh
@@ -275,9 +349,44 @@ ChatGPT Web (Codex Web)  ← OpenAI Tunnel
 |---|---|
 | `sandbox_exec` | Chạy code trong Docker — cô lập, an toàn |
 | `set_workspace` | Chuyển repo workspace không cần restart |
-| `set_workspace` | Chuyển repo workspace không cần restart |
+| `delegate_task` | Tạo task bền vững trong SQLite theo workspace |
+| `task_status` / `task_events` / `task_wait` | Xem trạng thái, event và chờ terminal |
+| Dashboard SSE | Theo dõi lifecycle task theo thời gian thực |
 | AGENTS.md | Playbook cho AI agent — workflow chuẩn |
 | `verify_done` | Evidence gate |
+
+### Dùng Durable Orchestration
+
+Tạo task bằng `delegate_task`:
+
+```json
+{
+  "goal": "Kiểm tra module authentication và chạy test liên quan",
+  "role": "executor",
+  "acceptanceCriteria": ["Xác định nguyên nhân", "Test pass"],
+  "risk": "safe-write",
+  "maxToolCalls": 30,
+  "timeoutMs": 600000,
+  "idempotencyKey": "auth-check-001"
+}
+```
+
+Sau đó dùng `task_status`, `task_events` hoặc `task_wait` với `taskId` trả về. Task được lưu qua restart và tách biệt khi đổi workspace bằng `set_workspace`.
+
+Hiện executor mặc định là `blocked-fallback`: `start: false` giữ task ở `queued`; `start: true` kết thúc ở `blocked` cho đến khi cấu hình transport OMO/OpenCode thật. Control plane không giả vờ đã chạy agent.
+
+### Mở riêng qua Tailscale
+
+```bash
+# MCP trong tailnet
+sudo tailscale serve --bg --https=8443 http://127.0.0.1:8787
+
+# Dashboard trong tailnet
+# server/.env: DASHBOARD_ALLOWED_ORIGINS=https://TEN-MAY.TAILNET.ts.net:8444
+sudo tailscale serve --bg --https=8444 http://127.0.0.1:8790
+```
+
+Truy cập `https://TEN-MAY.TAILNET.ts.net:8443/mcp` và `https://TEN-MAY.TAILNET.ts.net:8444/ui`. Nên đặt `MCP_AUTH_TOKEN` nếu tailnet có nhiều người dùng.
 
 ### An Toàn
 

@@ -23,10 +23,15 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: server/package-lock.json
+          cache-dependency-path: |
+            server/package-lock.json
+            packages/event-store/package-lock.json
       - name: Install server dependencies
         run: npm ci
         working-directory: server
+      - name: Install orchestration dependencies
+        run: npm ci
+        working-directory: packages/event-store
       - name: Guard source and check syntax
         working-directory: server
         run: |
@@ -37,6 +42,8 @@ jobs:
           node --check security-test.mjs
           node --check test-pro.mjs
           node --check test-hardening.mjs
+          node --check orchestration-runtime.mjs
+          node --check test-orchestration.mjs
           node --check ../evals/run.mjs
           node --check ../scripts/local-coding-agent.mjs
           node --check ../scripts/network-doctor.mjs
@@ -56,6 +63,7 @@ jobs:
         run: |
           bash -n install.sh
           bash -n scripts/start-tunnel.sh
+          bash -n scripts/start-lca.sh
           bash -n scripts/lca
       - name: Run MCP and runtime-security tests
         working-directory: server
@@ -93,6 +101,10 @@ jobs:
             npm run test:pro
             npm run test:security
             npm run test:hardening
+            npm run test:orchestration
+            foreach ($package in @("contracts", "event-store", "supervisor", "omo-adapter", "task-stream", "controller", "mcp-gateway")) {
+              npm test --prefix "../packages/$package"
+            }
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $ws -Recurse -Force -ErrorAction SilentlyContinue
@@ -107,9 +119,13 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: server/package-lock.json
+          cache-dependency-path: |
+            server/package-lock.json
+            packages/event-store/package-lock.json
       - run: npm ci
         working-directory: server
+      - run: npm ci
+        working-directory: packages/event-store
       - name: Run baseline security suite
         working-directory: server
         env:
@@ -134,9 +150,13 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: server/package-lock.json
+          cache-dependency-path: |
+            server/package-lock.json
+            packages/event-store/package-lock.json
       - run: npm ci
         working-directory: server
+      - run: npm ci
+        working-directory: packages/event-store
       - run: npm run eval
         working-directory: server
 

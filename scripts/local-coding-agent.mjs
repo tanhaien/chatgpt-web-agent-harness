@@ -471,9 +471,14 @@ function stripRuntimeFields(cfg) {
 
 async function installDeps(opts) {
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  const child = spawnLogged("install", npm, ["install"], { cwd: SERVER_DIR });
-  const code = await new Promise((resolveExit) => child.on("exit", resolveExit));
-  if (code !== 0) throw new Error(`npm install failed with exit code ${code}`);
+  for (const [label, cwd] of [
+    ["install-server", SERVER_DIR],
+    ["install-event-store", path.join(REPO_ROOT, "packages", "event-store")]
+  ]) {
+    const child = spawnLogged(label, npm, ["install"], { cwd });
+    const code = await new Promise((resolveExit) => child.on("exit", resolveExit));
+    if (code !== 0) throw new Error(`${label} failed with exit code ${code}`);
+  }
   console.log("Install complete.");
 }
 

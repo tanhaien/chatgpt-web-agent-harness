@@ -19,6 +19,11 @@ Push-Location (Join-Path $Root "server")
 npm install --no-fund --no-audit
 Pop-Location
 
+Write-Host "Installing durable orchestration dependencies..."
+Push-Location (Join-Path $Root "packages/event-store")
+npm install --no-fund --no-audit
+Pop-Location
+
 $tools = Join-Path $Root "tools"
 if (-not (Test-Path $tools)) { New-Item -ItemType Directory -Path $tools | Out-Null }
 

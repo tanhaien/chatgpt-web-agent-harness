@@ -18,6 +18,17 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Durable workspace-scoped orchestration with canonical contracts, SQLite event
+  storage, delegation supervision, task read/wait APIs, SSE streaming, an
+  OMO/OpenCode event adapter, a local closed-loop controller, and a Multi-MCP
+  provider gateway foundation.
+- MCP tools `delegate_task`, `task_status`, `task_events`, and `task_wait`, plus
+  local dashboard task-event streaming and persistence across server restarts.
+- Configurable `DASHBOARD_ALLOWED_ORIGINS` for private dashboard access through
+  reverse proxies such as Tailscale Serve.
+
+- Installation and CI coverage for the SQLite event-store dependency and all
+  orchestration package suites.
 - `experiments/standalone-client-roadmap/` documents the path from
   `v4.4.0-pro` to `v5.0.0` for a standalone Local Agent Studio that can run
   without ChatGPT Web.

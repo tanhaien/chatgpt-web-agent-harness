@@ -22,6 +22,13 @@ tmp-*/
 *-test-workspace/
 experiments/standalone-client-roadmap/v5.0.0-local-agent-studio/dist/
 
+# ---- Local agent/runtime state ----
+.harness/
+.omc/
+.omo/
+server/.omc/
+.mcp_data/
+
 # ---- .NET / build output ----
 bin/
 obj/

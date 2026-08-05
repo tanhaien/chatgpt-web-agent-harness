@@ -3,7 +3,7 @@
 
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -34,7 +34,7 @@ async function waitFor(url) {
   throw new Error(`Server did not become ready: ${url}`);
 }
 
-async function startServer(workspace, { port, dashboardPort = 0, policy = "strict", auth = "", approvalToken = "", maxBody = "1048576" }) {
+async function startServer(workspace, { port, dashboardPort = 0, policy = "strict", auth = "", approvalToken = "", dashboardAllowedOrigins = "", maxBody = "1048576" }) {
   await mkdir(workspace, { recursive: true });
   const child = spawn(process.execPath, [SERVER], {
     cwd: path.dirname(SERVER),
@@ -48,6 +48,7 @@ async function startServer(workspace, { port, dashboardPort = 0, policy = "stric
       AGENT_EXTRA_ROOTS_JSON: "[]",
       MCP_AUTH_TOKEN: auth,
       AGENT_APPROVAL_TOKEN: approvalToken,
+      DASHBOARD_ALLOWED_ORIGINS: dashboardAllowedOrigins,
       AGENT_MAX_BODY_BYTES: maxBody
     },
     windowsHide: true,
@@ -127,7 +128,12 @@ try {
 
   // Balanced policy approvals are decided out of band in the local dashboard.
   console.log("\n[phase] out-of-band one-time approvals");
-  server = await startServer(path.join(base, "balanced"), { port: 19006, dashboardPort: 19007, policy: "balanced" });
+  server = await startServer(path.join(base, "balanced"), {
+    port: 19006,
+    dashboardPort: 19007,
+    policy: "balanced",
+    dashboardAllowedOrigins: "https://dashboard.example"
+  });
   const balanced = await connect(19006);
   await call(balanced, "write_file", { path: "victim.txt", content: "x" });
   const blockedDelete = await call(balanced, "delete_path", { path: "victim.txt" });
@@ -167,6 +173,8 @@ try {
     call(balanced, "run_command", { command: "git fetch --dry-run" })
   ]);
   check("one-time approval remains one-time under concurrent calls", concurrentResults.filter((result) => result.isError).length === 1);
+  const allowedDashboard = await fetch("http://127.0.0.1:19007/metrics", { headers: { Origin: "https://dashboard.example" } });
+  check("dashboard accepts explicitly allowed proxy origin", allowedDashboard.status === 200);
   const evilDashboard = await fetch(`http://127.0.0.1:19007/api/approvals/${request.id}/deny`, { method: "POST", headers: { Origin: "https://evil.example" } });
   check("dashboard rejects cross-origin decisions", evilDashboard.status === 403);
   await balanced.close();
@@ -218,9 +226,58 @@ try {
   await stopServer(server);
   server = null;
 
+  // Runtime workspace switches must refresh canonical root confinement.
+  const workspaceB = path.join(base, "workspace-b");
+  console.log("\n[phase] dynamic workspace path confinement");
+  server = await startServer(workspaceA, { port: 19009, policy: "full" });
+  const switched = await connect(19009);
+  const baselineWrite = await call(switched, "write_file", { path: "workspace-a.txt", content: "workspace-a" });
+  const baselineRead = await call(switched, "read_file", { path: "workspace-a.txt" });
+  check("workspace A baseline write/read succeeds", !baselineWrite.isError && !baselineRead.isError && baselineRead.text.includes("workspace-a"));
+  await call(switched, "save_note", { title: "note-a", body: "workspace-a-note" });
+  await call(switched, "checkpoint", { summary: "checkpoint-a", next_steps: ["a-next"] });
+  const planA = await call(switched, "task_plan", { goal: "goal-a", steps: ["step-a"] });
+  check("workspace A task plan path is scoped to A", !planA.isError && planA.text.includes(path.join(workspaceA, ".agent", "state")));
+
+  await mkdir(path.join(workspaceB, ".agent", "skills", "workspace-b-skill"), { recursive: true });
+  await writeFile(path.join(workspaceB, ".agent", "profile.json"), JSON.stringify({ conventions: ["workspace-b-profile"], ignoredDirs: ["workspace-b-ignore"] }), "utf8");
+  await writeFile(path.join(workspaceB, ".agent", "skills", "workspace-b-skill", "SKILL.md"), "---\nname: workspace-b-skill\ndescription: workspace B only\n---\n", "utf8");
+  const switchResult = await call(switched, "set_workspace", { path: workspaceB });
+  check("set_workspace switches to workspace B", !switchResult.isError && switchResult.text.includes(workspaceB));
+  check("workspace B profile reloads automatically", (await call(switched, "profile_status")).text.includes("workspace-b-profile"));
+  check("workspace B skill directories refresh automatically", (await call(switched, "list_skills")).text.includes("workspace-b-skill"));
+  const switchedWrite = await call(switched, "write_file", { path: "workspace-b.txt", content: "workspace-b" });
+  const switchedRead = await call(switched, "read_file", { path: "workspace-b.txt" });
+  check("workspace B relative write/read succeeds", !switchedWrite.isError && !switchedRead.isError && switchedRead.text.includes("workspace-b"));
+  check("workspace B starts with isolated notes", (await call(switched, "list_notes")).text.includes("No notes saved yet"));
+  check("workspace B starts with isolated checkpoint", (await call(switched, "resume")).text.includes("No checkpoint saved yet"));
+  check("workspace B starts with isolated task plan", (await call(switched, "task_state")).text.includes("No task plan found"));
+  await call(switched, "save_note", { title: "note-b", body: "workspace-b-note" });
+  await call(switched, "checkpoint", { summary: "checkpoint-b", next_steps: ["b-next"] });
+  const planB = await call(switched, "task_plan", { goal: "goal-b", steps: ["step-b"] });
+  check("workspace B task plan path is scoped to B", !planB.isError && planB.text.includes(path.join(workspaceB, ".agent", "state")));
+
+  const oldRootAccess = await call(switched, "read_file", { path: path.join(workspaceA, "workspace-a.txt") });
+  check("old workspace A is blocked after switch", oldRootAccess.isError && oldRootAccess.text.includes("outside the allowed roots"));
+  const siblingAccess = await call(switched, "read_file", { path: path.join(base, "outside-b.txt") });
+  check("sibling outside workspace B remains blocked", siblingAccess.isError && siblingAccess.text.includes("outside the allowed roots"));
+
+  const switchBack = await call(switched, "set_workspace", { path: workspaceA });
+  check("set_workspace switches back to workspace A", !switchBack.isError && switchBack.text.includes(workspaceA));
+  const notesA = await call(switched, "list_notes");
+  const checkpointA = await call(switched, "resume");
+  const taskA = await call(switched, "task_state");
+  check("workspace A notes restore without B leakage", notesA.text.includes("note-a") && !notesA.text.includes("note-b"));
+  check("workspace A checkpoint restores without B leakage", checkpointA.text.includes("checkpoint-a") && !checkpointA.text.includes("checkpoint-b"));
+  check("workspace A task plan restores without B leakage", taskA.text.includes("goal-a") && !taskA.text.includes("goal-b"));
+  await switched.close();
+  await stopServer(server);
+  server = null;
+
   // History is scoped to the workspace and cannot replay into an old root.
   console.log("\n[phase] workspace-scoped history");
-  server = await startServer(path.join(base, "workspace-b"), { port: 19005, policy: "full" });
+  const workspaceC = path.join(base, "workspace-c");
+  server = await startServer(workspaceC, { port: 19005, policy: "full" });
   const other = await connect(19005);
   check("new workspace cannot undo another workspace history", (await call(other, "undo_last_patch")).isError);
   await other.close();

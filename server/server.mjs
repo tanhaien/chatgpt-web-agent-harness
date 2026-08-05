@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { createOrchestrationRuntime } from "./orchestration-runtime.mjs";
 
 // ----------------------------------------------------------------------------
 // Configuration (all overridable via environment variables)
@@ -77,29 +78,59 @@ const ALLOWED_ORIGINS = new Set(
     .map((s) => s.trim())
     .filter(Boolean)
 );
+const DASHBOARD_ALLOWED_ORIGINS = new Set(
+  String(process.env.DASHBOARD_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
 
 const DATA_DIR = path.resolve(APP_DIR, "data");
-const WORKSPACE_ID = createHash("sha256").update(comparePath(PRIMARY_ROOT)).digest("hex").slice(0, 16);
-const WORKSPACE_DATA_DIR = path.join(DATA_DIR, "workspaces", WORKSPACE_ID);
-const NOTES_PATH = path.resolve(WORKSPACE_DATA_DIR, "notes.json");
-const CHECKPOINT_PATH = path.resolve(WORKSPACE_DATA_DIR, "checkpoint.json");
 const AUDIT_PATH = path.resolve(DATA_DIR, "audit.log");
 const METRICS_PATH = path.resolve(DATA_DIR, "metrics.json");
 
-// v2.1 Repo index cache
-const INDEX_PATH = path.resolve(WORKSPACE_DATA_DIR, "index.json");
+// Workspace-scoped paths. These are refreshed whenever set_workspace changes
+// PRIMARY_ROOT so state, backups, approvals, and planner files never leak
+// between repositories.
+let WORKSPACE_ID;
+let WORKSPACE_DATA_DIR;
+let NOTES_PATH;
+let CHECKPOINT_PATH;
+let INDEX_PATH;
+let PATCH_HISTORY_PATH;
+let BACKUPS_DIR;
+let AGENT_STATE_DIR;
+let TASK_PLAN_PATH;
+let DECISIONS_PATH;
+let APPROVALS_DIR;
+let ORCHESTRATION_DB_PATH;
 
-// v2.2 Patch history
-const PATCH_HISTORY_PATH = path.resolve(WORKSPACE_DATA_DIR, "patch-history.json");
-const BACKUPS_DIR = path.resolve(WORKSPACE_DATA_DIR, "backups");
+function refreshWorkspaceContext() {
+  WORKSPACE_ID = createHash("sha256").update(comparePath(PRIMARY_ROOT)).digest("hex").slice(0, 16);
+  WORKSPACE_DATA_DIR = path.join(DATA_DIR, "workspaces", WORKSPACE_ID);
+  NOTES_PATH = path.resolve(WORKSPACE_DATA_DIR, "notes.json");
+  CHECKPOINT_PATH = path.resolve(WORKSPACE_DATA_DIR, "checkpoint.json");
+  INDEX_PATH = path.resolve(WORKSPACE_DATA_DIR, "index.json");
+  PATCH_HISTORY_PATH = path.resolve(WORKSPACE_DATA_DIR, "patch-history.json");
+  BACKUPS_DIR = path.resolve(WORKSPACE_DATA_DIR, "backups");
+  AGENT_STATE_DIR = path.join(PRIMARY_ROOT, ".agent", "state");
+  TASK_PLAN_PATH = path.join(AGENT_STATE_DIR, "current-task.json");
+  DECISIONS_PATH = path.join(AGENT_STATE_DIR, "decisions.md");
+  APPROVALS_DIR = path.resolve(WORKSPACE_DATA_DIR, "approvals");
+  ORCHESTRATION_DB_PATH = path.resolve(WORKSPACE_DATA_DIR, "orchestration.sqlite");
+}
 
-// v2.5 Planner state
-const AGENT_STATE_DIR = path.join(PRIMARY_ROOT, ".agent", "state");
-const TASK_PLAN_PATH = path.join(AGENT_STATE_DIR, "current-task.json");
-const DECISIONS_PATH = path.join(AGENT_STATE_DIR, "decisions.md");
+async function initializeWorkspaceContext() {
+  await mkdir(WORKSPACE_DATA_DIR, { recursive: true });
+  await mkdir(PRIMARY_ROOT, { recursive: true });
+  await mkdir(BACKUPS_DIR, { recursive: true });
+  await mkdir(APPROVALS_DIR, { recursive: true });
+  await mkdir(AGENT_STATE_DIR, { recursive: true });
+}
+
+refreshWorkspaceContext();
 
 // v2.6 Approvals
-const APPROVALS_DIR = path.resolve(WORKSPACE_DATA_DIR, "approvals");
 const APPROVAL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const APPROVAL_TTL_MINUTES = boundedNumber(process.env.AGENT_APPROVAL_TTL_MINUTES, 10, 1, 30);
 
@@ -116,11 +147,17 @@ let WORKSPACE_PROFILE = STARTUP_PROFILE;
 // Skills: reusable playbooks the agent can load on demand (Claude-style).
 // Discovered from: AGENT_SKILLS_DIR (env), the repo's shipped skills/, and each
 // workspace root's .claude/skills and .agent/skills.
-const SKILLS_DIRS = dedupe([
-  ...(process.env.AGENT_SKILLS_DIR ? [path.resolve(process.env.AGENT_SKILLS_DIR)] : []),
-  path.resolve(APP_DIR, "..", "skills"),
-  ...ROOTS.flatMap((r) => [path.join(r, ".claude", "skills"), path.join(r, ".agent", "skills")])
-]);
+let SKILLS_DIRS = [];
+
+function refreshSkillsDirs() {
+  SKILLS_DIRS = dedupe([
+    ...(process.env.AGENT_SKILLS_DIR ? [path.resolve(process.env.AGENT_SKILLS_DIR)] : []),
+    path.resolve(APP_DIR, "..", "skills"),
+    ...ROOTS.flatMap((r) => [path.join(r, ".claude", "skills"), path.join(r, ".agent", "skills")])
+  ]);
+}
+
+refreshSkillsDirs();
 
 const MAX_READ_CHARS = Number(process.env.AGENT_MAX_READ_CHARS || 200_000);
 // Default (not max) chars returned by read_file — keeps payloads small so the
@@ -134,7 +171,7 @@ const DEFAULT_CMD_TIMEOUT = 60_000;
 const MAX_PROCS = 24;
 const PROC_BUFFER = 200_000;
 
-const SKIP_DIRS = new Set([
+const BASE_SKIP_DIRS = [
   ".git",
   "node_modules",
   "dist",
@@ -144,9 +181,18 @@ const SKIP_DIRS = new Set([
   ".cache",
   "coverage",
   ".venv",
-  "__pycache__",
-  ...((Array.isArray(STARTUP_PROFILE?.ignoredDirs) ? STARTUP_PROFILE.ignoredDirs : []).map(String))
-]);
+  "__pycache__"
+];
+let SKIP_DIRS = new Set();
+
+function refreshSkipDirs() {
+  SKIP_DIRS = new Set([
+    ...BASE_SKIP_DIRS,
+    ...((Array.isArray(WORKSPACE_PROFILE?.ignoredDirs) ? WORKSPACE_PROFILE.ignoredDirs : []).map(String))
+  ]);
+}
+
+refreshSkipDirs();
 
 // Always blocked, even in full mode, unless AGENT_ALLOW_DANGEROUS=1.
 // These can brick the OS or wipe disks regardless of working directory.
@@ -192,22 +238,23 @@ const SAFE_MODE_BLOCKS = [
 // ----------------------------------------------------------------------------
 const processes = new Map(); // id -> { id, name, command, child, status, exitCode, startedAt, stdout, stderr }
 let approvalLock = Promise.resolve();
+let orchestrationRuntime = null;
+const ORCHESTRATION_EXECUTOR_MODE = "blocked-fallback";
 const bootStartedAt = Date.now();
 
 // ----------------------------------------------------------------------------
 // Bootstrap
 // ----------------------------------------------------------------------------
 await mkdir(DATA_DIR, { recursive: true });
-await mkdir(WORKSPACE_DATA_DIR, { recursive: true });
-await mkdir(PRIMARY_ROOT, { recursive: true });
-await mkdir(BACKUPS_DIR, { recursive: true });
-await mkdir(APPROVALS_DIR, { recursive: true });
-await mkdir(AGENT_STATE_DIR, { recursive: true });
+await initializeWorkspaceContext();
 
 let metrics = loadMetrics();
 
 // v2.8 Load workspace profile on startup
 await loadWorkspaceProfile();
+refreshSkipDirs();
+refreshSkillsDirs();
+await replaceOrchestrationRuntime();
 
 // Detect ripgrep once at startup — the fastest search engine when present.
 const RG_BIN = await detectRg();
@@ -224,6 +271,50 @@ function detectRg() {
     child.on("error", () => resolve(null));
     child.on("close", (code) => resolve(code === 0 ? "rg" : null));
   });
+}
+
+function blockedFallbackExecutor() {
+  return {
+    async execute() {
+      return {
+        status: "blocked",
+        summary: "No orchestration executor transport configured",
+        artifacts: [],
+        evidence: [],
+        filesChanged: [],
+        assumptions: [],
+        unresolvedIssues: []
+      };
+    }
+  };
+}
+
+async function replaceOrchestrationRuntime() {
+  const previous = orchestrationRuntime;
+  orchestrationRuntime = null;
+  if (previous) await previous.close();
+  orchestrationRuntime = createOrchestrationRuntime({
+    dbPath: ORCHESTRATION_DB_PATH,
+    executor: blockedFallbackExecutor(),
+    executorMode: ORCHESTRATION_EXECUTOR_MODE,
+    workspaceId: WORKSPACE_ID,
+    onRunError: (error, taskId) => log(`orchestration run failed task=${taskId}: ${error?.stack || error}`)
+  });
+}
+
+function orchestrationHealth() {
+  const snapshot = orchestrationRuntime?.snapshot();
+  return {
+    enabled: Boolean(snapshot?.enabled),
+    executor_mode: snapshot?.executorMode || ORCHESTRATION_EXECUTOR_MODE,
+    workspace_id: snapshot?.workspaceId || WORKSPACE_ID,
+    in_flight_runs: snapshot?.inFlightRuns || 0
+  };
+}
+
+function requireOrchestrationRuntime() {
+  if (!orchestrationRuntime) throw new Error("Orchestration runtime is unavailable");
+  return orchestrationRuntime;
 }
 
 const httpServer = http.createServer(async (req, res) => {
@@ -258,7 +349,8 @@ const httpServer = http.createServer(async (req, res) => {
         roots: ROOTS,
         workspace: PRIMARY_ROOT,
         dashboard_port: DASHBOARD_PORT,
-        mcp_endpoint: `http://${HOST}:${PORT}/mcp`
+        mcp_endpoint: `http://${HOST}:${PORT}/mcp`,
+        orchestration: orchestrationHealth()
       });
     }
     if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
@@ -311,6 +403,7 @@ if (DASHBOARD_PORT > 0) {
       if (url.pathname === "/api/tree") return void dashApiTree(url, res);
       if (url.pathname === "/api/file") return void dashApiFile(url, res);
       if (url.pathname === "/api/diff") return void dashApiDiff(url, res);
+      if (url.pathname === "/api/task-events" && req.method === "GET") return void dashApiTaskEvents(req, url, res);
       if (url.pathname === "/api/approvals" && req.method === "GET") return void dashApiApprovals(res);
       if (url.pathname.startsWith("/api/approvals/") && req.method === "POST") return void dashApiApprovalAction(url, res);
       if (url.pathname === "/api/clear-metrics" && req.method === "POST") return void dashApiClearMetrics(res);
@@ -336,6 +429,96 @@ if (DASHBOARD_PORT > 0) {
   });
 }
 
+function parseDashboardInteger(url, name, defaultValue, min, max) {
+  const raw = url.searchParams.get(name);
+  if (raw === null || raw === "") return defaultValue;
+  if (!/^-?\d+$/.test(raw)) throw new TypeError(`${name} must be an integer`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new TypeError(`${name} must be between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function waitForResponseDrain(res, signal) {
+  if (signal?.aborted || res.destroyed || res.writableEnded) return Promise.resolve();
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      res.off("drain", finish);
+      res.off("close", finish);
+      signal?.removeEventListener("abort", finish);
+    };
+    const finish = () => {
+      cleanup();
+      resolve();
+    };
+    res.once("drain", finish);
+    res.once("close", finish);
+    signal?.addEventListener("abort", finish, { once: true });
+    if (signal?.aborted || res.destroyed || res.writableEnded) finish();
+  });
+}
+
+async function dashApiTaskEvents(req, url, res) {
+  let taskId;
+  let afterSequence;
+  let limit;
+  let heartbeatMs;
+  try {
+    taskId = String(url.searchParams.get("taskId") || "").trim();
+    if (!taskId) throw new TypeError("taskId is required");
+    afterSequence = parseDashboardInteger(url, "afterSequence", -1, -1, Number.MAX_SAFE_INTEGER);
+    limit = parseDashboardInteger(url, "limit", 100, 1, 1000);
+    heartbeatMs = parseDashboardInteger(url, "heartbeatMs", 15000, 1000, 60000);
+  } catch (error) {
+    return sendJson(res, 400, { error: error?.message || "invalid_query" });
+  }
+
+  const runtime = orchestrationRuntime;
+  if (!runtime) return sendJson(res, 503, { error: "orchestration_unavailable" });
+  let task;
+  try {
+    task = runtime.status({ taskId });
+  } catch (error) {
+    return sendJson(res, 400, { error: error?.message || "invalid_task" });
+  }
+  if (!task) return sendJson(res, 404, { error: "task_not_found" });
+
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  req.once("aborted", abort);
+  res.once("close", abort);
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  res.flushHeaders?.();
+
+  try {
+    for await (const frame of runtime.streamEvents(
+      { taskId, afterSequence, limit },
+      { signal: controller.signal, heartbeatMs }
+    )) {
+      if (controller.signal.aborted || res.destroyed || res.writableEnded) break;
+      if (!res.write(frame)) await waitForResponseDrain(res, controller.signal);
+    }
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      log(`task SSE failed task=${taskId}: ${error?.stack || error}`);
+      if (!res.headersSent) return sendJson(res, 500, { error: "task_stream_failed" });
+      res.destroy(error);
+    }
+  } finally {
+    req.off("aborted", abort);
+    res.off("close", abort);
+    if (!res.destroyed && !res.writableEnded) res.end();
+  }
+}
+
 // Never let a single bad request take the whole server down.
 process.on("uncaughtException", (err) => log(`uncaughtException: ${err?.stack || err}`));
 process.on("unhandledRejection", (err) => log(`unhandledRejection: ${err?.stack || err}`));
@@ -344,8 +527,11 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
     log(`${sig} received, shutting down`);
     saveMetricsSync();
     for (const proc of processes.values()) killProcessTree(proc);
-    httpServer.close(() => process.exit(0));
+    httpServer.close();
     dashServer?.close();
+    Promise.resolve(orchestrationRuntime?.close())
+      .catch((error) => log(`orchestration close failed: ${error?.stack || error}`))
+      .finally(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();
   });
 }
@@ -413,6 +599,7 @@ const SERVER_INSTRUCTIONS = [
   "Keep the conversation light: do NOT re-read a file you already read; read only the line range you need; never dump a whole large file or large command output unless asked.",
   "When the conversation grows long or feels slow, call checkpoint() with a compact summary + next steps, then tell the user to open a NEW chat; in that fresh chat call resume() first. This resets the heavy context (faster) while keeping your progress.",
   "If a task matches an available skill, call list_skills first, then read_skill(name) to load its instructions before doing the work.",
+  "Durable orchestration control is available through delegate_task, task_status, task_events, and task_wait. The built-in executor is an explicit blocked fallback until an external executor transport is configured.",
   "Prefer a few large, well-targeted calls over many tiny ones."
 ].join("\n");
 
@@ -435,6 +622,7 @@ function createMcpServer() {
   registerWebSearchTools(mcp);    // v2.9
   registerVerifyTools(mcp);       // v2.9
   registerSandboxTools(mcp);      // v2.9
+  registerOrchestrationTools(mcp);
   registerWorkspaceTools(mcp);    // v2.9
   return mcp;
 }
@@ -600,6 +788,106 @@ function reg(mcp, name, def, handler) {
 }
 
 // ----------------------------------------------------------------------------
+// Durable orchestration tools
+// ----------------------------------------------------------------------------
+function registerOrchestrationTools(mcp) {
+  const roleSchema = z.enum(["planner", "executor", "reviewer", "verifier", "researcher"]);
+  const riskSchema = z.enum(["read", "safe-write", "risky", "critical"]);
+  const terminalStatusSchema = z.enum(["completed", "blocked", "failed", "cancelled"]);
+
+  reg(
+    mcp,
+    "delegate_task",
+    {
+      title: "Delegate durable task",
+      description: "Persist a durable delegated task. Queue-only by default; start=true runs the explicit blocked fallback executor until a real executor transport is configured.",
+      inputSchema: {
+        goal: z.string().min(1),
+        role: roleSchema,
+        acceptanceCriteria: z.array(z.string().min(1)).min(1),
+        risk: riskSchema,
+        maxToolCalls: z.number().int().min(1).max(10000),
+        timeoutMs: z.number().int().min(1000).max(86400000),
+        taskId: z.string().min(1).optional(),
+        parentTaskId: z.string().min(1).optional(),
+        requiredCapabilities: z.array(z.string().min(1)).optional(),
+        evidenceRequired: z.array(z.string().min(1)).optional(),
+        metadata: z.record(z.unknown()).optional(),
+        idempotencyKey: z.string().min(1).optional(),
+        start: z.boolean().optional()
+      }
+    },
+    async ({ start = false, ...request }) => {
+      const runtime = requireOrchestrationRuntime();
+      const ref = runtime.delegate(request);
+      if (start) runtime.start(ref.taskId);
+      return jsonResult({ ...ref, started: start, executorMode: ORCHESTRATION_EXECUTOR_MODE });
+    }
+  );
+
+  reg(
+    mcp,
+    "task_status",
+    {
+      title: "Read durable task status",
+      description: "Project the current durable status of a delegated task.",
+      inputSchema: { taskId: z.string().min(1) }
+    },
+    async ({ taskId }) => {
+      const task = requireOrchestrationRuntime().status({ taskId });
+      return jsonResult({ found: Boolean(task), task: task || null });
+    }
+  );
+
+  reg(
+    mcp,
+    "task_events",
+    {
+      title: "Read durable task events",
+      description: "Read or long-poll a page of durable task lifecycle events.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        afterSequence: z.number().int().min(-1).optional(),
+        limit: z.number().int().min(1).max(1000).optional(),
+        waitMs: z.number().int().min(0).max(60000).optional()
+      }
+    },
+    async ({ taskId, afterSequence = -1, limit = 100, waitMs = 0 }, extra) => {
+      const result = await requireOrchestrationRuntime().events(
+        { taskId, afterSequence, limit, waitMs },
+        { signal: extra?.signal }
+      );
+      return jsonResult(result);
+    }
+  );
+
+  reg(
+    mcp,
+    "task_wait",
+    {
+      title: "Wait for durable task",
+      description: "Wait until a durable task reaches a terminal status or the timeout expires.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        timeoutMs: z.number().int().min(0).max(86400000).optional(),
+        terminalStatuses: z.array(terminalStatusSchema).min(1).optional(),
+        afterSequence: z.number().int().min(-1).optional()
+      }
+    },
+    async ({ taskId, timeoutMs, terminalStatuses, afterSequence = -1 }, extra) => {
+      const input = { taskId };
+      if (timeoutMs !== undefined) input.timeoutMs = timeoutMs;
+      if (terminalStatuses !== undefined) input.terminalStatuses = terminalStatuses;
+      const result = await requireOrchestrationRuntime().wait(input, {
+        afterSequence,
+        signal: extra?.signal
+      });
+      return jsonResult({ found: Boolean(result), result: result || null });
+    }
+  );
+}
+
+// ----------------------------------------------------------------------------
 // Basic tools
 // ----------------------------------------------------------------------------
 function registerBasicTools(mcp) {
@@ -641,6 +929,7 @@ function registerBasicTools(mcp) {
           max_procs: MAX_PROCS
         },
         running_processes: [...processes.values()].filter((p) => p.status === "running").length,
+        orchestration: orchestrationHealth(),
         safety:
           MODE === "full"
             ? ["File tools are root-confined; command cwd is root-confined but command execution is not an OS sandbox.", "Catastrophic system commands stay blocked unless AGENT_ALLOW_DANGEROUS=1.", "Paths outside the roots are rejected by file tools."]
@@ -1697,14 +1986,24 @@ function parsePorcelain(out) {
 // ----------------------------------------------------------------------------
 // Path safety
 // ----------------------------------------------------------------------------
-// Canonical (symlink/junction-resolved) form of the roots, computed once.
-const REAL_ROOTS = ROOTS.map((r) => {
-  try {
-    return realpathSync(r);
-  } catch {
-    return r;
-  }
-});
+// Lazy cache for canonical (symlink/junction-resolved) roots. Invalidated when
+// ROOTS changes (e.g. set_workspace), keyed by the current ROOTS content.
+let realRootsCache = null;
+let realRootsKey = null;
+
+function getRealRoots() {
+  const key = ROOTS.join("\0");
+  if (realRootsCache && realRootsKey === key) return realRootsCache;
+  realRootsKey = key;
+  realRootsCache = ROOTS.map((r) => {
+    try {
+      return realpathSync(r);
+    } catch {
+      return r;
+    }
+  });
+  return realRootsCache;
+}
 
 // Resolve the longest existing ancestor with realpath, then re-append the
 // not-yet-existing tail. This canonicalizes symlinks/junctions even for files
@@ -1733,7 +2032,7 @@ function resolvePath(input = ".") {
   // this avoids false rejections on case-insensitive macOS volumes when the
   // caller uses different path casing than the filesystem stores.
   const canon = canonicalize(resolved);
-  if (!isWithinRoots(canon, REAL_ROOTS)) {
+  if (!isWithinRoots(canon, getRealRoots())) {
     throw new Error(`Path is outside the allowed roots or resolves outside via a link: ${input}`);
   }
   return resolved;
@@ -2621,7 +2920,8 @@ function dashboardOriginAllowed(req) {
   return new Set([
     `http://127.0.0.1:${DASHBOARD_PORT}`,
     `http://localhost:${DASHBOARD_PORT}`,
-    `http://[::1]:${DASHBOARD_PORT}`
+    `http://[::1]:${DASHBOARD_PORT}`,
+    ...DASHBOARD_ALLOWED_ORIGINS
   ]).has(origin);
 }
 
@@ -5493,6 +5793,12 @@ function registerWorkspaceTools(mcp) {
       }
       PRIMARY_ROOT = resolved;
       ROOTS = dedupe([PRIMARY_ROOT, ...EXTRA_ROOTS]);
+      refreshWorkspaceContext();
+      await initializeWorkspaceContext();
+      await loadWorkspaceProfile();
+      refreshSkipDirs();
+      refreshSkillsDirs();
+      await replaceOrchestrationRuntime();
       try {
         const envPath = path.resolve(APP_DIR, ".env");
         const envContent = readFileSync(envPath, "utf-8");
